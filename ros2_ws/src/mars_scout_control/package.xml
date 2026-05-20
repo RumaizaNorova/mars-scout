@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mars_scout_control</name>
+  <version>0.1.0</version>
+  <description>Agent FSM + pursuit controller + NavigateToTarget action server for Mars Scout.</description>
+  <maintainer email="norova@ualberta.ca">Ruma</maintainer>
+  <license>MIT</license>
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>mars_scout_msgs</depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <test_depend>pytest</test_depend>
+</package>
