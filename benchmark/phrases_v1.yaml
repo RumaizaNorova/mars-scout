@@ -1,0 +1,23 @@
+version: 1
+phrases:
+  - id: largest_rock
+    text: "Go to the largest rock."
+  - id: darkest_rock
+    text: "Go to the darkest rock."
+  - id: tall_spire_rock
+    text: "Go to the tall spire rock."
+  - id: flat_top_rock
+    text: "Go to the rock with the flat top."
+  - id: red_brown_right
+    text: "Go to the red-brown rock on the right side of the image."
+  - id: closest_rock
+    text: "Go to the rock closest to the rover."
+  - id: farthest_visible
+    text: "Go to the rock farthest away but still visible."
+  - id: skull_like
+    text: "Go to the rock that looks like a skull."
+  - id: stop_short_jagged
+    text: "Stop 1 meter short of the jagged rock."
+  - id: cluster_small
+    text: "Approach the grouped cluster of small rocks."
+
