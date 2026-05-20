@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rover_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files for Mars rover agent</description>
+  <maintainer email="norova@ualberta.ca">Ruma</maintainer>
+  <license>MIT</license>
+  <depend>rover_vision</depend>
+  <depend>rover_nav</depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+</package>
