@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mars_scout_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files for Mars Scout — mock and full GPU pipelines.</description>
+  <maintainer email="norova@ualberta.ca">Ruma</maintainer>
+  <license>MIT</license>
+  <depend>mars_scout_mock</depend>
+  <depend>mars_scout_perception</depend>
+  <depend>mars_scout_geometry</depend>
+  <depend>mars_scout_control</depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+</package>

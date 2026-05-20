@@ -1,0 +1,48 @@
+# ── Mars Scout — Mac / CPU dev image ─────────────────────────────────────────
+#
+# No GPU, no Isaac Sim, no ROS2 install required on your Mac.
+# Runs the full mock pipeline: mock_bridge → perception → geometry → control
+# Uses pre-built ROS2 from the ros:humble image.
+#
+# Build:
+#   docker build -f Dockerfile.dev -t mars-scout:dev .
+#
+# Run:
+#   docker run --rm -it --network host mars-scout:dev
+#
+# Then inside the container:
+#   ros2 launch mars_scout_bringup mock.launch.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM ros:humble-ros-base-jammy
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    python3-pip \
+    ros-humble-cv-bridge \
+    ros-humble-tf2-ros \
+    ros-humble-tf2-geometry-msgs \
+    python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python deps ───────────────────────────────────────────────────────────────
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# ── Project ───────────────────────────────────────────────────────────────────
+WORKDIR /root/mars-scout
+COPY . .
+
+RUN bash -c "\
+    source /opt/ros/humble/setup.bash && \
+    cd ros2_ws && \
+    colcon build --symlink-install --packages-ignore \
+        rover_vision rover_nav rover_bringup"
+
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "source /root/mars-scout/ros2_ws/install/setup.bash 2>/dev/null || true" \
+         >> /root/.bashrc
+
+CMD ["bash"]

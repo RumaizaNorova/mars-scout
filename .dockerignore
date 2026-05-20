@@ -1,0 +1,26 @@
+.git
+.github
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.DS_Store
+
+# ROS build artefacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Bags and outputs
+bags/
+outputs/
+*.bag
+*.db3
+
+# Large data files (downloaded at runtime)
+ros2_ws/src/mars_scout_mock/data/*.jpg
+ros2_ws/src/mars_scout_mock/data/*.png
+
+# Docs
+docs/PROJECT_MASTER_PLAN.md
+docs/internal/
