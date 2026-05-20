@@ -1,0 +1,27 @@
+# Action: the full navigation loop from NL query to arrival.
+# Allows the operator to cancel mid-mission and get live progress feedback.
+
+# ── Goal ──────────────────────────────────────────────────────────────────────
+string query_text
+float32 timeout_sec        # 0 = unlimited
+float32 min_confidence     # minimum VLM confidence to commit to a waypoint
+float32 arrival_radius_m   # how close is "arrived" (metres)
+
+---
+
+# ── Result (sent on completion / cancellation) ────────────────────────────────
+bool   success
+string outcome             # ARRIVED | TIMEOUT | ABORTED | LOW_CONFIDENCE
+geometry_msgs/Point final_position   # where the rover stopped (map frame)
+float32 total_distance_m
+float32 elapsed_sec
+string  vlm_description    # what the VLM said it found
+
+---
+
+# ── Feedback (streamed during execution) ──────────────────────────────────────
+string  fsm_state
+float32 distance_to_goal_m
+float32 vlm_confidence
+string  vlm_description       # latest VLM terrain read
+geometry_msgs/Point rover_position
