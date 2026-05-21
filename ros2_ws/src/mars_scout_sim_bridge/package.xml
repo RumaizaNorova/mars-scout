@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mars_scout_sim_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    Bridge between NVIDIA Isaac Sim and the Mars Scout ROS2 stack.
+    Translates Isaac Sim omni.isaac.ros2_bridge topics into the same
+    topic/TF interface that mars_scout_mock publishes, so every
+    downstream node (perception, geometry, control) works unchanged.
+  </description>
+  <maintainer email="you@example.com">mars-scout</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>cv_bridge</depend>
+  <depend>mars_scout_msgs</depend>
+
+  <test_depend>pytest</test_depend>
+  <test_depend>ament_copyright</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
