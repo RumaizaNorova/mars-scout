@@ -50,14 +50,24 @@ import numpy as np
 import omni
 import omni.usd
 from omni.isaac.core import World
-from omni.isaac.core.utils.nucleus import get_assets_root_path
-from omni.isaac.core.utils.stage import add_reference_to_stage
-from omni.isaac.core.utils.prims import define_prim
-from omni.isaac.wheeled_robots.robots import WheeledRobot
+try:
+    from isaacsim.core.utils.nucleus import get_assets_root_path  # 5.x
+    from isaacsim.core.utils.stage import add_reference_to_stage
+    from isaacsim.core.utils.prims import define_prim
+except ImportError:
+    from omni.isaac.core.utils.nucleus import get_assets_root_path  # 4.x
+    from omni.isaac.core.utils.stage import add_reference_to_stage
+    from omni.isaac.core.utils.prims import define_prim
+try:
+    from isaacsim.robot.wheeled_robots.robots import WheeledRobot  # 5.x
+except ImportError:
+    from omni.isaac.wheeled_robots.robots import WheeledRobot  # 4.x
 
-# ROS2 bridge extension
-from omni.isaac.ros2_bridge import ROS2Camera, ROS2Odometry, ROS2Subscriber
-from geometry_msgs.msg import Twist
+# ROS2 bridge extension — import path changed in Isaac Sim 5.x
+try:
+    from isaacsim.ros2.bridge import ROS2Camera, ROS2Odometry  # 5.x
+except ImportError:
+    from omni.isaac.ros2_bridge import ROS2Camera, ROS2Odometry  # 4.x
 import omni.graph.core as og
 
 
