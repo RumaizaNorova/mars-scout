@@ -32,7 +32,12 @@ parser.add_argument("--headless", action="store_true")
 _parsed, _remaining = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + _remaining
 
-from omni.isaac.kit import SimulationApp  # noqa: E402
+# Isaac Sim 6.x (pip install) uses isaacsim.SimulationApp
+# Isaac Sim 4.x and older used omni.isaac.kit.SimulationApp
+try:
+    from isaacsim import SimulationApp  # noqa: E402  (Isaac Sim 6.x pip)
+except ImportError:
+    from omni.isaac.kit import SimulationApp  # noqa: E402  (Isaac Sim 4.x)
 
 simulation_app = SimulationApp({
     "headless": _parsed.headless,
