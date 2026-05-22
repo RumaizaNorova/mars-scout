@@ -63,12 +63,20 @@ try:
 except ImportError:
     from omni.isaac.wheeled_robots.robots import WheeledRobot  # 4.x
 
-# ROS2 bridge extension — import path changed in Isaac Sim 5.x
-try:
-    from isaacsim.ros2.bridge import ROS2Camera, ROS2Odometry  # 5.x
-except ImportError:
-    from omni.isaac.ros2_bridge import ROS2Camera, ROS2Odometry  # 4.x
 import omni.graph.core as og
+from omni.isaac.core.utils.extensions import enable_extension
+
+# Enable ROS2 bridge extension — must be done before importing
+enable_extension("omni.isaac.ros2_bridge")
+simulation_app.update()  # let the extension load
+
+# Now safe to import bridge classes (extension is loaded)
+try:
+    from omni.isaac.ros2_bridge import ROS2Camera, ROS2Odometry  # 4.x / 5.x
+except ImportError:
+    # Isaac Sim 5.x pip variant may place them differently; OmniGraph fallback below
+    ROS2Camera = None
+    ROS2Odometry = None
 
 
 # ── World ──────────────────────────────────────────────────────────────────────
@@ -146,28 +154,34 @@ camera_prim_path = "/World/Rover/chassis/Camera"
 define_prim(camera_prim_path, "Camera")
 camera_prim = stage.GetPrimAtPath(camera_prim_path)
 
-ros2_camera = ROS2Camera(
-    prim_path           = camera_prim_path,
-    name                = "rover_camera",
-    frequency           = 15,
-    resolution          = (1280, 720),
-    rgb_topic           = "/isaac_camera/rgb",
-    depth_topic         = "/isaac_camera/depth",
-    camera_info_topic   = "/isaac_camera/camera_info",
-)
-world.scene.add(ros2_camera)
-print("[setup_scene] ROS2Camera bridge ready on /isaac_camera/*")
+if ROS2Camera is not None:
+    ros2_camera = ROS2Camera(
+        prim_path           = camera_prim_path,
+        name                = "rover_camera",
+        frequency           = 15,
+        resolution          = (1280, 720),
+        rgb_topic           = "/isaac_camera/rgb",
+        depth_topic         = "/isaac_camera/depth",
+        camera_info_topic   = "/isaac_camera/camera_info",
+    )
+    world.scene.add(ros2_camera)
+    print("[setup_scene] ROS2Camera bridge ready on /isaac_camera/*")
+else:
+    print("[setup_scene] ROS2Camera not available — camera topics will be published via OmniGraph.")
 
 # ── ROS2 odometry bridge ──────────────────────────────────────────────────────
-ros2_odom = ROS2Odometry(
-    prim_path         = "/World/Rover",
-    name              = "rover_odom",
-    frequency         = 30,
-    linear_vel_topic  = "/cmd_vel",   # Isaac reads this for the differential drive
-    odom_topic        = "/odom",
-)
-world.scene.add(ros2_odom)
-print("[setup_scene] ROS2Odometry bridge ready on /odom")
+if ROS2Odometry is not None:
+    ros2_odom = ROS2Odometry(
+        prim_path         = "/World/Rover",
+        name              = "rover_odom",
+        frequency         = 30,
+        linear_vel_topic  = "/cmd_vel",   # Isaac reads this for the differential drive
+        odom_topic        = "/odom",
+    )
+    world.scene.add(ros2_odom)
+    print("[setup_scene] ROS2Odometry bridge ready on /odom")
+else:
+    print("[setup_scene] ROS2Odometry not available — odometry will be published via OmniGraph.")
 
 # ── cmd_vel subscriber (ROS2 -> Isaac differential drive) ─────────────────────
 # Action graph node subscribes /cmd_vel and drives the rover wheels.
