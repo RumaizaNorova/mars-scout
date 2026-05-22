@@ -9,6 +9,6 @@
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>mars_scout_msgs</depend>
-  <buildtool_depend>ament_python</buildtool_depend>
+  <export><build_type>ament_python</build_type></export>
   <test_depend>pytest</test_depend>
 </package>
