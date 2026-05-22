@@ -107,17 +107,32 @@ if not terrain_loaded:
 
 # ── Rover ─────────────────────────────────────────────────────────────────────
 ROVER_USD = f"{assets_root}/Isaac/Robots/Jetbot/jetbot.usd"
-rover = world.scene.add(
-    WheeledRobot(
-        prim_path         = "/World/Rover",
-        name              = "rover",
-        wheel_dof_names   = ["left_wheel_joint", "right_wheel_joint"],
-        create_robot      = True,
-        usd_path          = ROVER_USD,
-        position          = np.array([0.0, 0.0, 0.1]),
+rover_prim_path = "/World/Rover"
+
+# Stage the USD first (non-fatal — may fail if Nucleus is unreachable)
+try:
+    add_reference_to_stage(usd_path=ROVER_USD, prim_path=rover_prim_path)
+    print(f"[setup_scene] Jetbot USD staged at {rover_prim_path}")
+except Exception as _e:
+    print(f"[setup_scene] Jetbot USD staging failed ({_e}); rover will be a kinematic prim.")
+
+# Register articulation — use create_robot=False so we don't re-add the USD
+rover = None
+try:
+    rover = world.scene.add(
+        WheeledRobot(
+            prim_path       = rover_prim_path,
+            name            = "rover",
+            wheel_dof_names = ["left_wheel_joint", "right_wheel_joint"],
+            create_robot    = False,
+            position        = np.array([0.0, 0.0, 0.1]),
+        )
     )
-)
-print(f"[setup_scene] Rover loaded at /World/Rover")
+    print("[setup_scene] WheeledRobot articulation registered.")
+except Exception as _e:
+    print(f"[setup_scene] WheeledRobot skipped ({_e}); rover is pose-only.")
+    rover = None
+print(f"[setup_scene] Rover prim at {rover_prim_path}")
 
 # ── Rocks (interest targets) ──────────────────────────────────────────────────
 ROCK_CONFIG = [
@@ -221,7 +236,13 @@ except Exception as e:
     print("[setup_scene] You can wire cmd_vel manually in the Isaac Sim GUI.")
 
 # ── Simulate ───────────────────────────────────────────────────────────────────
-world.reset()
+try:
+    world.reset()
+    print("[setup_scene] Physics initialised successfully.")
+except Exception as _e:
+    print(f"[setup_scene] world.reset() warning: {_e}")
+    print("[setup_scene] Continuing — rover articulation may be unavailable, camera + OmniGraph still work.")
+
 print("\n[setup_scene] Simulation running.")
 print("[setup_scene] In a new terminal, run:")
 print("  ros2 run mars_scout_sim_bridge topic_inspector")
