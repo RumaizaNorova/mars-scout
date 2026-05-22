@@ -162,78 +162,142 @@ for i, (x, y, z, r, hint) in enumerate(ROCK_CONFIG):
 
 print(f"[setup_scene] {len(ROCK_CONFIG)} rock prims placed.")
 
-# ── ROS2 camera bridge ────────────────────────────────────────────────────────
-# Attaches a camera to the rover at 15-degree downward pitch, publishes:
-#   /isaac_camera/rgb, /isaac_camera/depth, /isaac_camera/camera_info
-camera_prim_path = "/World/Rover/chassis/Camera"
+# ── Camera prim (top-level, not tied to Rover chassis which may not have loaded) ─
+camera_prim_path = "/World/Camera"
 define_prim(camera_prim_path, "Camera")
 camera_prim = stage.GetPrimAtPath(camera_prim_path)
+try:
+    from pxr import UsdGeom, Gf
+    _xf = UsdGeom.Xformable(camera_prim)
+    _xf.AddTranslateOp().Set((0.0, 0.0, 0.3))     # 30 cm above ground
+    _xf.AddRotateXYZOp().Set((-15.0, 0.0, 0.0))   # 15° nose-down
+    camera_prim.GetAttribute("focalLength").Set(24.0)
+    camera_prim.GetAttribute("clippingRange").Set(Gf.Vec2f(0.01, 10000.0))
+    print(f"[setup_scene] Camera prim at {camera_prim_path} (15° tilt, f/24)")
+except Exception as _e:
+    print(f"[setup_scene] Camera transform warning: {_e}")
 
-if ROS2Camera is not None:
-    ros2_camera = ROS2Camera(
-        prim_path           = camera_prim_path,
-        name                = "rover_camera",
-        frequency           = 15,
-        resolution          = (1280, 720),
-        rgb_topic           = "/isaac_camera/rgb",
-        depth_topic         = "/isaac_camera/depth",
-        camera_info_topic   = "/isaac_camera/camera_info",
-    )
-    world.scene.add(ros2_camera)
-    print("[setup_scene] ROS2Camera bridge ready on /isaac_camera/*")
+# ── Render product (needed for OmniGraph camera publisher) ────────────────────
+_render_product_path = ""
+try:
+    import omni.replicator.core as rep
+    _rp = rep.create.render_product(camera_prim_path, (1280, 720))
+    _render_product_path = _rp.path
+    print(f"[setup_scene] Render product ready: {_render_product_path}")
+except Exception as _e:
+    print(f"[setup_scene] Render product failed ({_e}) — camera OmniGraph will be skipped.")
+
+# ── OmniGraph: camera RGB + depth publisher ───────────────────────────────────
+if _render_product_path:
+    for _cam_type, _topic in [("rgb",   "/isaac_camera/rgb"),
+                               ("depth", "/isaac_camera/depth")]:
+        try:
+            og.Controller.edit(
+                {"graph_path": f"/World/Cam{_cam_type.capitalize()}Graph",
+                 "evaluator_name": "execution"},
+                {
+                    og.Controller.Keys.CREATE_NODES: [
+                        ("OnTick",    "omni.graph.action.OnTick"),
+                        ("CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ],
+                    og.Controller.Keys.SET_VALUES: [
+                        ("CamHelper.inputs:renderProductPath",    _render_product_path),
+                        ("CamHelper.inputs:topicName",            _topic),
+                        ("CamHelper.inputs:type",                 _cam_type),
+                        ("CamHelper.inputs:frameId",              "camera_optical_frame"),
+                        ("CamHelper.inputs:enableSemanticLabels", False),
+                    ],
+                    og.Controller.Keys.CONNECT: [
+                        ("OnTick.outputs:tick", "CamHelper.inputs:execIn"),
+                    ],
+                },
+            )
+            print(f"[setup_scene] OmniGraph camera '{_cam_type}' → {_topic}")
+        except Exception as _e:
+            print(f"[setup_scene] Camera {_cam_type} OmniGraph failed (non-fatal): {_e}")
 else:
-    print("[setup_scene] ROS2Camera not available — camera topics will be published via OmniGraph.")
+    print("[setup_scene] Skipping camera OmniGraph (no render product).")
 
-# ── ROS2 odometry bridge ──────────────────────────────────────────────────────
-if ROS2Odometry is not None:
-    ros2_odom = ROS2Odometry(
-        prim_path         = "/World/Rover",
-        name              = "rover_odom",
-        frequency         = 30,
-        linear_vel_topic  = "/cmd_vel",   # Isaac reads this for the differential drive
-        odom_topic        = "/odom",
-    )
-    world.scene.add(ros2_odom)
-    print("[setup_scene] ROS2Odometry bridge ready on /odom")
-else:
-    print("[setup_scene] ROS2Odometry not available — odometry will be published via OmniGraph.")
-
-# ── cmd_vel subscriber (ROS2 -> Isaac differential drive) ─────────────────────
-# Action graph node subscribes /cmd_vel and drives the rover wheels.
-# This uses OmniGraph to wire Twist.linear.x / Twist.angular.z -> wheel velocities.
+# ── OmniGraph: odometry publisher ─────────────────────────────────────────────
 try:
     og.Controller.edit(
-        {"graph_path": "/World/CmdVelGraph", "evaluator_name": "execution"},
+        {"graph_path": "/World/OdomGraph", "evaluator_name": "execution"},
         {
             og.Controller.Keys.CREATE_NODES: [
-                ("OnTick",      "omni.graph.action.OnTick"),
-                ("ROS2Sub",     "omni.isaac.ros2_bridge.ROS2SubscribeTwist"),
-                ("DiffDrive",   "omni.isaac.wheeled_robots.DifferentialController"),
-                ("ArticCtrl",   "omni.isaac.core_nodes.IsaacArticulationController"),
+                ("OnTick",   "omni.graph.action.OnTick"),
+                ("CompOdom", "isaacsim.core.nodes.IsaacComputeOdometry"),
+                ("PubOdom",  "isaacsim.ros2.bridge.ROS2PublishOdometry"),
             ],
             og.Controller.Keys.SET_VALUES: [
-                ("ROS2Sub.inputs:topicName",        "/cmd_vel"),
-                ("DiffDrive.inputs:wheelRadius",    0.0325),
-                ("DiffDrive.inputs:wheelDistance",  0.1125),
-                ("DiffDrive.inputs:maxLinearSpeed",  0.5),
-                ("ArticCtrl.inputs:robotPath",      "/World/Rover"),
-                ("ArticCtrl.inputs:jointNames",     ["left_wheel_joint",
-                                                     "right_wheel_joint"]),
+                ("CompOdom.inputs:chassisPrim",   [rover_prim_path]),
+                ("PubOdom.inputs:topicName",      "/odom"),
+                ("PubOdom.inputs:odomFrameId",    "odom"),
+                ("PubOdom.inputs:chassisFrameId", "base_link"),
             ],
             og.Controller.Keys.CONNECT: [
-                ("OnTick.outputs:tick",             "ROS2Sub.inputs:execIn"),
-                ("ROS2Sub.outputs:execOut",         "DiffDrive.inputs:execIn"),
-                ("ROS2Sub.outputs:linearVelocity",  "DiffDrive.inputs:linearVelocity"),
-                ("ROS2Sub.outputs:angularVelocity", "DiffDrive.inputs:angularVelocity"),
-                ("DiffDrive.outputs:execOut",       "ArticCtrl.inputs:execIn"),
-                ("DiffDrive.outputs:velocityCommand","ArticCtrl.inputs:velocityCommands"),
+                ("OnTick.outputs:tick",               "CompOdom.inputs:execIn"),
+                ("CompOdom.outputs:execOut",          "PubOdom.inputs:execIn"),
+                ("CompOdom.outputs:position",         "PubOdom.inputs:position"),
+                ("CompOdom.outputs:orientation",      "PubOdom.inputs:orientation"),
+                ("CompOdom.outputs:linearVelocity",   "PubOdom.inputs:linearVelocity"),
+                ("CompOdom.outputs:angularVelocity",  "PubOdom.inputs:angularVelocity"),
             ],
         },
     )
-    print("[setup_scene] OmniGraph cmd_vel -> differential drive wired.")
-except Exception as e:
-    print(f"[setup_scene] OmniGraph wiring failed (non-fatal): {e}")
-    print("[setup_scene] You can wire cmd_vel manually in the Isaac Sim GUI.")
+    print("[setup_scene] OmniGraph odometry → /odom")
+except Exception as _e:
+    print(f"[setup_scene] Odometry OmniGraph failed (non-fatal): {_e}")
+
+# ── OmniGraph: cmd_vel subscriber → differential drive ───────────────────────
+# Try Isaac Sim 5.x node names first, fall back to 4.x names.
+_cmdvel_wired = False
+for _sub, _diff, _artic in [
+    # 5.x names
+    ("isaacsim.ros2.bridge.ROS2SubscribeTwist",
+     "isaacsim.robot.wheeled_robots.DifferentialController",
+     "isaacsim.core.nodes.IsaacArticulationController"),
+    # 4.x names (fallback)
+    ("omni.isaac.ros2_bridge.ROS2SubscribeTwist",
+     "omni.isaac.wheeled_robots.DifferentialController",
+     "omni.isaac.core_nodes.IsaacArticulationController"),
+]:
+    try:
+        og.Controller.edit(
+            {"graph_path": "/World/CmdVelGraph", "evaluator_name": "execution"},
+            {
+                og.Controller.Keys.CREATE_NODES: [
+                    ("OnTick",    "omni.graph.action.OnTick"),
+                    ("ROS2Sub",   _sub),
+                    ("DiffDrive", _diff),
+                    ("ArticCtrl", _artic),
+                ],
+                og.Controller.Keys.SET_VALUES: [
+                    ("ROS2Sub.inputs:topicName",        "/cmd_vel"),
+                    ("DiffDrive.inputs:wheelRadius",    0.0325),
+                    ("DiffDrive.inputs:wheelDistance",  0.1125),
+                    ("DiffDrive.inputs:maxLinearSpeed", 0.5),
+                    ("ArticCtrl.inputs:robotPath",      "/World/Rover"),
+                    ("ArticCtrl.inputs:jointNames",     ["left_wheel_joint",
+                                                         "right_wheel_joint"]),
+                ],
+                og.Controller.Keys.CONNECT: [
+                    ("OnTick.outputs:tick",              "ROS2Sub.inputs:execIn"),
+                    ("ROS2Sub.outputs:execOut",          "DiffDrive.inputs:execIn"),
+                    ("ROS2Sub.outputs:linearVelocity",   "DiffDrive.inputs:linearVelocity"),
+                    ("ROS2Sub.outputs:angularVelocity",  "DiffDrive.inputs:angularVelocity"),
+                    ("DiffDrive.outputs:execOut",        "ArticCtrl.inputs:execIn"),
+                    ("DiffDrive.outputs:velocityCommand","ArticCtrl.inputs:velocityCommands"),
+                ],
+            },
+        )
+        print(f"[setup_scene] OmniGraph cmd_vel → differential drive ({_sub.split('.')[0]}.*)")
+        _cmdvel_wired = True
+        break
+    except Exception:
+        pass  # try next variant
+
+if not _cmdvel_wired:
+    print("[setup_scene] cmd_vel OmniGraph: all variants failed — wire manually in Isaac Sim GUI.")
 
 # ── Simulate ───────────────────────────────────────────────────────────────────
 try:
