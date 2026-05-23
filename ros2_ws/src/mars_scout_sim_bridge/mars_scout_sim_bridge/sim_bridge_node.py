@@ -132,6 +132,10 @@ class SimBridgeNode(Node):
         hz_state = 5.0
         self.create_timer(1.0 / hz_state, self._publish_state)
 
+        # Publish a static TF tree even before Isaac Sim odom arrives,
+        # so downstream nodes (VLM, projection) can start immediately.
+        self.create_timer(0.2, self._ensure_tf)
+
         self.get_logger().info(
             f"SimBridgeNode ready. "
             f"Subscribing Isaac Sim on: {rgb_in}, {depth_in}, {odom_in}. "
@@ -184,31 +188,39 @@ class SimBridgeNode(Node):
     # ── TF broadcasting ───────────────────────────────────────────────────────
 
     def _broadcast_tf(self, odom: Odometry):
-        """
-        Publish TF tree: map -> odom (identity) -> base_link -> camera_optical_frame
+        """Publish TF from live Isaac Sim odometry."""
+        p = odom.pose.pose.position
+        r = odom.pose.pose.orientation
+        self._broadcast_tf_at(
+            odom.header.stamp,
+            p.x, p.y, p.z,
+            r.x, r.y, r.z, r.w,
+        )
 
-        Isaac Sim gives us odom->base_link.  We add:
-          - map->odom  (identity; localisation not done here)
-          - base_link->camera_optical_frame (fixed, 15deg downward pitch)
+    def _broadcast_tf_at(self, stamp, px, py, pz, rx, ry, rz, rw):
         """
-        stamp = odom.header.stamp
-
-        # map -> odom (identity until we have a localisation node)
+        Publish TF tree: map → odom (identity) → base_link → camera_optical_frame.
+        Accepts explicit position/orientation so it works with or without live odom.
+        """
+        # map -> odom (identity; no localisation)
         t_map_odom = TransformStamped()
         t_map_odom.header.stamp    = stamp
         t_map_odom.header.frame_id = "map"
         t_map_odom.child_frame_id  = "odom"
         t_map_odom.transform.rotation.w = 1.0
 
-        # odom -> base_link (from Isaac Sim odometry)
+        # odom -> base_link
         t_odom_base = TransformStamped()
         t_odom_base.header.stamp    = stamp
         t_odom_base.header.frame_id = "odom"
         t_odom_base.child_frame_id  = "base_link"
-        t_odom_base.transform.translation.x = odom.pose.pose.position.x
-        t_odom_base.transform.translation.y = odom.pose.pose.position.y
-        t_odom_base.transform.translation.z = odom.pose.pose.position.z
-        t_odom_base.transform.rotation      = odom.pose.pose.orientation
+        t_odom_base.transform.translation.x = px
+        t_odom_base.transform.translation.y = py
+        t_odom_base.transform.translation.z = pz
+        t_odom_base.transform.rotation.x = rx
+        t_odom_base.transform.rotation.y = ry
+        t_odom_base.transform.rotation.z = rz
+        t_odom_base.transform.rotation.w = rw if rw != 0.0 else 1.0
 
         # base_link -> camera_optical_frame (fixed: 0.15m forward, 0.10m up, -15deg pitch)
         t_base_cam = TransformStamped()
@@ -217,32 +229,41 @@ class SimBridgeNode(Node):
         t_base_cam.child_frame_id  = "camera_optical_frame"
         t_base_cam.transform.translation.x = 0.15
         t_base_cam.transform.translation.z = 0.10
-        # -15 deg pitch around Y in camera optical convention
         pitch = -math.radians(15.0)
         t_base_cam.transform.rotation.y = math.sin(pitch / 2.0)
         t_base_cam.transform.rotation.w = math.cos(pitch / 2.0)
 
-        self._tf_broadcaster.sendTransform(
-            [t_map_odom, t_odom_base, t_base_cam]
-        )
+        self._tf_broadcaster.sendTransform([t_map_odom, t_odom_base, t_base_cam])
+
+    # ── TF heartbeat (runs even before Isaac Sim sends odom) ─────────────────
+
+    def _ensure_tf(self):
+        """
+        Keep the TF tree alive even when /odom isn't arriving.
+        When real odom arrives, _broadcast_tf() takes over at its higher rate.
+        """
+        if self._latest_odom is not None:
+            return  # _broadcast_tf is already handling it
+        stamp = self.get_clock().now().to_msg()
+        self._broadcast_tf_at(stamp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
 
     # ── rover state (derived from odometry) ──────────────────────────────────
 
     def _publish_state(self):
-        if self._latest_odom is None:
-            return
+        """Publish rover state; emits zeros at origin if Isaac Sim odom is absent."""
         msg = RoverState()
         msg.header.stamp    = self.get_clock().now().to_msg()
         msg.header.frame_id = "base_link"
-        msg.x   = self._latest_odom.pose.pose.position.x
-        msg.y   = self._latest_odom.pose.pose.position.y
-        q = self._latest_odom.pose.pose.orientation
-        # yaw from quaternion
-        siny = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        msg.yaw = math.atan2(siny, cosy)
-        msg.linear_vel  = self._latest_odom.twist.twist.linear.x
-        msg.angular_vel = self._latest_odom.twist.twist.angular.z
+        if self._latest_odom is not None:
+            msg.x   = self._latest_odom.pose.pose.position.x
+            msg.y   = self._latest_odom.pose.pose.position.y
+            q = self._latest_odom.pose.pose.orientation
+            siny = 2.0 * (q.w * q.z + q.x * q.y)
+            cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+            msg.yaw = math.atan2(siny, cosy)
+            msg.linear_vel  = self._latest_odom.twist.twist.linear.x
+            msg.angular_vel = self._latest_odom.twist.twist.angular.z
+        # else: all fields stay 0.0 — rover at origin, stationary
         self._pub_state.publish(msg)
 
 
