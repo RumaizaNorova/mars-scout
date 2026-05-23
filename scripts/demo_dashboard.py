@@ -35,8 +35,15 @@ except ImportError:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PointStamped
+
+_SENSOR_QOS = QoSProfile(
+    depth=5,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
 # ---------------------------------------------------------------------------
 # Shared state (written by ROS thread, read by Flask thread)
@@ -49,6 +56,9 @@ _state = {
     "rover_y": 0.0,
     "rover_yaw_deg": 0.0,
     "linear_vel": 0.0,
+    "fsm_state": "IDLE",        # SEARCHING | APPROACHING | ARRIVED | ABORTED
+    "active_query": "",         # what the rover is looking for
+    "dist_to_goal": float("nan"),
     "target_x": None,
     "target_y": None,
     "last_target_ts": 0.0,      # time.monotonic() of last target msg
@@ -98,22 +108,17 @@ def draw_overlay(frame, state_snap):
     # ---- bottom bar ----
     _overlay_bar(img, h - BAR_H, h)
 
-    rx = state_snap["rover_x"]
-    ry = state_snap["rover_y"]
-    hdg = state_snap["rover_yaw_deg"] % 360
-    vel = state_snap["linear_vel"]
-    tx = state_snap["target_x"]
-    ty = state_snap["target_y"]
+    fsm   = state_snap["fsm_state"]
+    query = state_snap["active_query"] or "—"
+    dist  = state_snap["dist_to_goal"]
+    tx    = state_snap["target_x"]
+    ty    = state_snap["target_y"]
 
-    if tx is not None:
-        tgt_str = f"Target: ({tx:.1f}, {ty:.1f})"
-    else:
-        tgt_str = "Target: --"
+    dist_str = f"{dist:.1f}m" if (dist == dist) else "—"  # nan check
+    tgt_str  = f"({tx:.1f},{ty:.1f})" if tx is not None else "—"
 
     bottom_text = (
-        f"Rover  x={rx:.1f}m  y={ry:.1f}m  hdg={hdg:05.1f}°"
-        f"  |  {tgt_str}"
-        f"  |  Vel: {vel:.2f} m/s"
+        f"{fsm}  |  \"{query}\"  |  dist={dist_str}  |  target={tgt_str}"
     )
     cv2.putText(img, bottom_text, (10, h - 10),
                 FONT, 0.55, WHITE, 1, cv2.LINE_AA)
@@ -146,7 +151,7 @@ class DashboardNode(Node):
         super().__init__("demo_dashboard")
 
         self.create_subscription(Image, "/rover/camera/image_raw",
-                                 self._cb_image, 1)
+                                 self._cb_image, _SENSOR_QOS)
         self.create_subscription(PointStamped, "/rover/geometry/terrain_target",
                                  self._cb_target, 10)
 
@@ -173,11 +178,22 @@ class DashboardNode(Node):
 
     def _cb_state(self, msg):
         import math
+        # RoverState fields: pose (PoseWithCovariance), velocity (TwistWithCovariance),
+        # fsm_state (str), active_query_text (str), distance_to_goal (float32)
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
         with _lock:
-            _state["rover_x"] = float(msg.x)
-            _state["rover_y"] = float(msg.y)
-            _state["rover_yaw_deg"] = float(math.degrees(msg.yaw))
-            _state["linear_vel"] = float(msg.linear_vel)
+            _state["rover_x"]       = float(p.x)
+            _state["rover_y"]       = float(p.y)
+            _state["rover_yaw_deg"] = float(math.degrees(yaw))
+            _state["linear_vel"]    = float(msg.velocity.twist.linear.x)
+            _state["fsm_state"]     = msg.fsm_state or "IDLE"
+            _state["active_query"]  = msg.active_query_text
+            _state["dist_to_goal"]  = float(msg.distance_to_goal)
 
     def _cb_target(self, msg: PointStamped):
         with _lock:
