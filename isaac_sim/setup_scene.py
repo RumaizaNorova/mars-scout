@@ -249,14 +249,20 @@ except Exception as _e:
     print(f"[setup_scene] Odometry OmniGraph failed (non-fatal): {_e}")
 
 # ── OmniGraph: cmd_vel subscriber → differential drive ───────────────────────
-# Try Isaac Sim 5.x node names first, fall back to 4.x names.
+# ROS2SubscribeTwist outputs linearVelocity / angularVelocity as double3.
+# DifferentialController expects scalar doubles, so we extract x (linear) and z (angular).
+# Clear any stale graph from a previous run first.
+_cmdvel_stage = omni.usd.get_context().get_stage()
+if _cmdvel_stage.GetPrimAtPath("/World/CmdVelGraph").IsValid():
+    _cmdvel_stage.RemovePrim("/World/CmdVelGraph")
+
 _cmdvel_wired = False
 for _sub, _diff, _artic in [
-    # 5.x names
+    # Isaac Sim 5.x names (try first)
     ("isaacsim.ros2.bridge.ROS2SubscribeTwist",
      "isaacsim.robot.wheeled_robots.DifferentialController",
      "isaacsim.core.nodes.IsaacArticulationController"),
-    # 4.x names (fallback)
+    # Isaac Sim 4.x names (fallback)
     ("omni.isaac.ros2_bridge.ROS2SubscribeTwist",
      "omni.isaac.wheeled_robots.DifferentialController",
      "omni.isaac.core_nodes.IsaacArticulationController"),
@@ -268,6 +274,9 @@ for _sub, _diff, _artic in [
                 og.Controller.Keys.CREATE_NODES: [
                     ("OnTick",    "omni.graph.action.OnTick"),
                     ("ROS2Sub",   _sub),
+                    # Break double3 → scalar x / z for the differential controller
+                    ("BrkLin",    "omni.graph.nodes.BreakVector3"),
+                    ("BrkAng",    "omni.graph.nodes.BreakVector3"),
                     ("DiffDrive", _diff),
                     ("ArticCtrl", _artic),
                 ],
@@ -281,20 +290,26 @@ for _sub, _diff, _artic in [
                                                          "right_wheel_joint"]),
                 ],
                 og.Controller.Keys.CONNECT: [
-                    ("OnTick.outputs:tick",              "ROS2Sub.inputs:execIn"),
-                    ("ROS2Sub.outputs:execOut",          "DiffDrive.inputs:execIn"),
-                    ("ROS2Sub.outputs:linearVelocity",   "DiffDrive.inputs:linearVelocity"),
-                    ("ROS2Sub.outputs:angularVelocity",  "DiffDrive.inputs:angularVelocity"),
-                    ("DiffDrive.outputs:execOut",        "ArticCtrl.inputs:execIn"),
-                    ("DiffDrive.outputs:velocityCommand","ArticCtrl.inputs:velocityCommands"),
+                    ("OnTick.outputs:tick",               "ROS2Sub.inputs:execIn"),
+                    ("ROS2Sub.outputs:execOut",           "DiffDrive.inputs:execIn"),
+                    # linear.x → forward speed
+                    ("ROS2Sub.outputs:linearVelocity",    "BrkLin.inputs:tuple"),
+                    ("BrkLin.outputs:x",                  "DiffDrive.inputs:linearVelocity"),
+                    # angular.z → yaw rate
+                    ("ROS2Sub.outputs:angularVelocity",   "BrkAng.inputs:tuple"),
+                    ("BrkAng.outputs:z",                  "DiffDrive.inputs:angularVelocity"),
+                    ("DiffDrive.outputs:execOut",         "ArticCtrl.inputs:execIn"),
+                    ("DiffDrive.outputs:velocityCommand", "ArticCtrl.inputs:velocityCommands"),
                 ],
             },
         )
-        print(f"[setup_scene] OmniGraph cmd_vel → differential drive ({_sub.split('.')[0]}.*)")
+        print(f"[setup_scene] OmniGraph cmd_vel → diff drive ({_sub.split('.')[0]}.*)")
         _cmdvel_wired = True
         break
-    except Exception:
-        pass  # try next variant
+    except Exception as _e:
+        # Clear the partial graph before trying the next variant
+        if _cmdvel_stage.GetPrimAtPath("/World/CmdVelGraph").IsValid():
+            _cmdvel_stage.RemovePrim("/World/CmdVelGraph")
 
 if not _cmdvel_wired:
     print("[setup_scene] cmd_vel OmniGraph: all variants failed — wire manually in Isaac Sim GUI.")
