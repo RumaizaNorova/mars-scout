@@ -327,8 +327,12 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    print("[demo_dashboard] Flask MJPEG server → http://0.0.0.0:8765/")
-    app.run(host="0.0.0.0", port=8765, threaded=True, use_reloader=False)
+    import argparse, os
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
+    args, _ = ap.parse_known_args()
+    print(f"[demo_dashboard] Flask MJPEG server → http://0.0.0.0:{args.port}/")
+    app.run(host="0.0.0.0", port=args.port, threaded=True, use_reloader=False)
 
 
 if __name__ == "__main__":
