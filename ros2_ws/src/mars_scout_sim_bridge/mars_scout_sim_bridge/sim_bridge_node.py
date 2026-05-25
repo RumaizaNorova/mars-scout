@@ -54,6 +54,7 @@ import tf2_ros
 from geometry_msgs.msg import TransformStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image, CameraInfo
+from builtin_interfaces.msg import Time as RosTime
 
 from mars_scout_msgs.msg import RoverState
 
@@ -136,6 +137,26 @@ class SimBridgeNode(Node):
         # so downstream nodes (VLM, projection) can start immediately.
         self.create_timer(0.2, self._ensure_tf)
 
+        # ── Camera intrinsics for fabricated CameraInfo ───────────────────────
+        # Isaac Sim ROS2CameraHelper (type "rgb"/"depth") does NOT publish
+        # camera_info.  We fabricate it from the known camera parameters:
+        #   focal length 18 mm on a 1280×720 sensor.
+        # Using the standard 36mm-wide sensor assumption for Isaac Sim:
+        #   fx = fy = (focal_mm / sensor_width_mm) * image_width_px
+        #           = (18 / 36) * 1280 = 640
+        self._cam_width  = 1280
+        self._cam_height = 720
+        _fx = 640.0   # (18mm focal / 36mm sensor) * 1280px
+        _fy = 640.0
+        _cx = self._cam_width  / 2.0   # 640.0
+        _cy = self._cam_height / 2.0   # 360.0
+        self._fabricated_camera_info = self._make_camera_info(
+            _fx, _fy, _cx, _cy, self._cam_width, self._cam_height
+        )
+        # Publish fabricated camera_info at a steady rate so projection_node
+        # gets it even if Isaac Sim's OmniGraph never sends /isaac_camera/camera_info
+        self.create_timer(0.1, self._publish_camera_info_heartbeat)
+
         self.get_logger().info(
             f"SimBridgeNode ready. "
             f"Subscribing Isaac Sim on: {rgb_in}, {depth_in}, {odom_in}. "
@@ -151,16 +172,28 @@ class SimBridgeNode(Node):
             return True
         return False
 
+    def _fix_stamp(self, stamp: RosTime) -> RosTime:
+        """
+        Replace a zero timestamp (Isaac Sim publishes stamp=0 in headless mode)
+        with the current wall-clock time.  This prevents TF_OLD_DATA warnings
+        and downstream 'timestamp=0' complaints in all ROS2 nodes.
+        """
+        if stamp.sec == 0 and stamp.nanosec == 0:
+            return self.get_clock().now().to_msg()
+        return stamp
+
     def _on_rgb(self, msg: Image):
         if not self._throttle_ok("rgb"):
             return
         msg.header.frame_id = "camera_optical_frame"
+        msg.header.stamp = self._fix_stamp(msg.header.stamp)
         self._pub_rgb.publish(msg)
 
     def _on_depth(self, msg: Image):
         if not self._throttle_ok("depth"):
             return
         msg.header.frame_id = "camera_optical_frame"
+        msg.header.stamp = self._fix_stamp(msg.header.stamp)
         # Isaac Sim publishes depth as 32FC1 (metres) — so do we. No conversion.
         self._pub_depth.publish(msg)
 
@@ -168,6 +201,7 @@ class SimBridgeNode(Node):
         if not self._throttle_ok("info"):
             return
         msg.header.frame_id = "camera_optical_frame"
+        msg.header.stamp = self._fix_stamp(msg.header.stamp)
         self._pub_info.publish(msg)
 
     def _on_odom(self, msg: Odometry):
@@ -175,6 +209,7 @@ class SimBridgeNode(Node):
             return
         msg.header.frame_id     = "odom"
         msg.child_frame_id      = "base_link"
+        msg.header.stamp = self._fix_stamp(msg.header.stamp)
         self._latest_odom = msg
         self._pub_odom.publish(msg)
         self._broadcast_tf(msg)
@@ -247,15 +282,55 @@ class SimBridgeNode(Node):
         stamp = self.get_clock().now().to_msg()
         self._broadcast_tf_at(stamp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
 
+    # ── camera_info helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_camera_info(fx: float, fy: float, cx: float, cy: float,
+                          width: int, height: int) -> CameraInfo:
+        """Build a CameraInfo message from pinhole intrinsics."""
+        info = CameraInfo()
+        info.header.frame_id = "camera_optical_frame"
+        info.width  = width
+        info.height = height
+        info.distortion_model = "plumb_bob"
+        info.d = [0.0, 0.0, 0.0, 0.0, 0.0]
+        # K (3×3 row-major)
+        info.k = [fx,  0.0, cx,
+                  0.0, fy,  cy,
+                  0.0, 0.0, 1.0]
+        # R = identity
+        info.r = [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0]
+        # P (3×4 row-major)
+        info.p = [fx,  0.0, cx,  0.0,
+                  0.0, fy,  cy,  0.0,
+                  0.0, 0.0, 1.0, 0.0]
+        return info
+
+    def _publish_camera_info_heartbeat(self):
+        """
+        Publish fabricated CameraInfo at 10 Hz so projection_node always has it.
+        If Isaac Sim sends a real camera_info via _on_info, that will overwrite
+        the fabricated one; this heartbeat is the reliable fallback.
+        """
+        msg = self._fabricated_camera_info
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self._pub_info.publish(msg)
+
     # ── rover state (derived from odometry) ──────────────────────────────────
 
     def _publish_state(self):
         """Publish rover state; emits zeros at origin if Isaac Sim odom is absent."""
-        from geometry_msgs.msg import PoseWithCovariance, TwistWithCovariance
         msg = RoverState()
         msg.header.stamp    = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
         msg.fsm_state       = "SEARCHING"   # sim bridge doesn't run the FSM
+        # Populate active_query_text so the dashboard shows something meaningful
+        # instead of "???".  The default query is the one set in the launch file.
+        msg.active_query_text = "rock formation"
+        msg.active_query_id   = "sim_bridge"
+        msg.distance_to_goal  = math.nan
         if self._latest_odom is not None:
             msg.pose     = self._latest_odom.pose
             msg.velocity = self._latest_odom.twist

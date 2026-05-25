@@ -115,8 +115,8 @@ def draw_overlay(frame, state_snap):
     # ---- bottom bar ----
     _overlay_bar(img, h - BAR_H, h)
 
-    fsm   = state_snap["fsm_state"]
-    query = state_snap["active_query"] or "—"
+    fsm   = state_snap["fsm_state"] or "IDLE"
+    query = state_snap["active_query"] or "rock formation"
     dist  = state_snap["dist_to_goal"]
     tx    = state_snap["target_x"]
     ty    = state_snap["target_y"]
@@ -197,14 +197,20 @@ class DashboardNode(Node):
             2.0 * (q.w * q.z + q.x * q.y),
             1.0 - 2.0 * (q.y * q.y + q.z * q.z),
         )
+        dist = float(msg.distance_to_goal)
+        # float32 NaN may arrive as a large/inf value; normalise to Python nan
+        if not math.isfinite(dist):
+            dist = float("nan")
         with _lock:
             _state["rover_x"]       = float(p.x)
             _state["rover_y"]       = float(p.y)
             _state["rover_yaw_deg"] = float(math.degrees(yaw))
             _state["linear_vel"]    = float(msg.velocity.twist.linear.x)
             _state["fsm_state"]     = msg.fsm_state or "IDLE"
-            _state["active_query"]  = msg.active_query_text
-            _state["dist_to_goal"]  = float(msg.distance_to_goal)
+            # active_query_text may be empty on first messages; keep last good value
+            if msg.active_query_text:
+                _state["active_query"] = msg.active_query_text
+            _state["dist_to_goal"]  = dist
 
     def _cb_target(self, msg):
         # Handles both TerrainTarget and PointStamped (fallback)
@@ -330,6 +336,32 @@ def stream():
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
+    import argparse
+    import os
+    import socket
+
+    ap = argparse.ArgumentParser(description="Mars Scout live dashboard")
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)),
+                    help="HTTP port for the MJPEG stream (default: 8765)")
+    args, _ = ap.parse_known_args()
+
+    # Check early whether the port is already in use — give a clear message
+    # instead of a cryptic "Address already in use" traceback.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+        _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            _sock.bind(("0.0.0.0", args.port))
+        except OSError:
+            print(
+                f"\n[demo_dashboard] ERROR: Port {args.port} is already in use.\n"
+                f"  Another dashboard instance is probably running.  Either:\n"
+                f"    kill $(lsof -ti :{args.port})   # kill the zombie\n"
+                f"    python3 scripts/demo_dashboard.py --port {args.port + 1}   "
+                f"# use a different port\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     rclpy.init()
     node = DashboardNode()
 
@@ -337,7 +369,7 @@ def main():
     ros_thread.start()
 
     def _shutdown(sig, frame):
-        print("\n[demo_dashboard] shutting down…")
+        print("\n[demo_dashboard] shutting down...")
         node.destroy_node()
         rclpy.shutdown()
         sys.exit(0)
@@ -345,11 +377,7 @@ def main():
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    import argparse, os
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8765)))
-    args, _ = ap.parse_known_args()
-    print(f"[demo_dashboard] Flask MJPEG server → http://0.0.0.0:{args.port}/")
+    print(f"[demo_dashboard] Flask MJPEG server -> http://0.0.0.0:{args.port}/")
     app.run(host="0.0.0.0", port=args.port, threaded=True, use_reloader=False)
 
 

@@ -48,6 +48,9 @@ def generate_launch_description():
             "isaac_odom_topic":   LaunchConfiguration("isaac_odom_topic"),
             "isaac_cmdvel_topic": LaunchConfiguration("isaac_cmdvel_topic"),
             "publish_hz":         LaunchConfiguration("publish_hz"),
+            # Isaac Sim publishes with sim-time stamps (or zero-stamped in headless
+            # mode).  All nodes must use wall clock so timestamps are consistent.
+            "use_sim_time":       False,
         }],
     )
 
@@ -56,7 +59,11 @@ def generate_launch_description():
         executable = "perception_node",
         name       = "perception_node",
         output     = "screen",
-        parameters = [{"backend": "mock"}],   # switch to moondream2 once installed
+        parameters = [{
+            "backend":         "mock",    # switch to moondream2 once installed
+            "default_query":   LaunchConfiguration("query"),
+            "use_sim_time":    False,
+        }],
     )
 
     projection = Node(
@@ -64,6 +71,7 @@ def generate_launch_description():
         executable = "projection_node",
         name       = "projection_node",
         output     = "screen",
+        parameters = [{"use_sim_time": False}],
     )
 
     agent = Node(
@@ -71,6 +79,7 @@ def generate_launch_description():
         executable = "agent_node",
         name       = "agent_node",
         output     = "screen",
+        parameters = [{"use_sim_time": False}],
     )
 
     return LaunchDescription(args + [sim_bridge, perception, projection, agent])
