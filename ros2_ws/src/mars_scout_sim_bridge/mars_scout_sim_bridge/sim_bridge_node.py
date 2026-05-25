@@ -251,19 +251,14 @@ class SimBridgeNode(Node):
 
     def _publish_state(self):
         """Publish rover state; emits zeros at origin if Isaac Sim odom is absent."""
+        from geometry_msgs.msg import PoseWithCovariance, TwistWithCovariance
         msg = RoverState()
         msg.header.stamp    = self.get_clock().now().to_msg()
-        msg.header.frame_id = "base_link"
+        msg.header.frame_id = "map"
+        msg.fsm_state       = "SEARCHING"   # sim bridge doesn't run the FSM
         if self._latest_odom is not None:
-            msg.x   = self._latest_odom.pose.pose.position.x
-            msg.y   = self._latest_odom.pose.pose.position.y
-            q = self._latest_odom.pose.pose.orientation
-            siny = 2.0 * (q.w * q.z + q.x * q.y)
-            cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-            msg.yaw = math.atan2(siny, cosy)
-            msg.linear_vel  = self._latest_odom.twist.twist.linear.x
-            msg.angular_vel = self._latest_odom.twist.twist.angular.z
-        # else: all fields stay 0.0 — rover at origin, stationary
+            msg.pose     = self._latest_odom.pose
+            msg.velocity = self._latest_odom.twist
         self._pub_state.publish(msg)
 
 

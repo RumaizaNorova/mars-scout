@@ -44,7 +44,6 @@ from sensor_msgs.msg  import Image, CameraInfo
 from geometry_msgs.msg import Twist, TransformStamped, Quaternion, Point, Vector3
 from nav_msgs.msg      import Odometry
 from std_msgs.msg      import Header
-from cv_bridge         import CvBridge
 import tf2_ros
 
 from mars_scout_mock.depth_synthesis  import DepthSynthesiser, DepthSynthesisConfig
@@ -83,7 +82,6 @@ class MockBridgeNode(Node):
         pano_path = self.get_parameter("panorama_path").value
 
         # ── State ─────────────────────────────────────────────────────────────
-        self._bridge   = CvBridge()
         self._rover    = DifferentialDriveModel()
         self._depth_synth = DepthSynthesiser(
             DepthSynthesisConfig(noise_sigma=self.get_parameter("noise_sigma").value)
@@ -181,18 +179,28 @@ class MockBridgeNode(Node):
     # ── Publishers ────────────────────────────────────────────────────────────
 
     def _publish_rgb(self, bgr: np.ndarray, stamp):
-        msg = self._bridge.cv2_to_imgmsg(bgr, encoding="bgr8")
+        msg = Image()
         msg.header.stamp    = stamp
         msg.header.frame_id = "camera_optical_frame"
+        msg.height   = bgr.shape[0]
+        msg.width    = bgr.shape[1]
+        msg.encoding = "bgr8"
+        msg.step     = bgr.shape[1] * 3
+        msg.data     = bgr.tobytes()
         self._pub_rgb.publish(msg)
 
     def _publish_depth(self, depth: np.ndarray, stamp):
-        # Replace NaN with 0 for the ROS message (convention: 0 = invalid)
         d = depth.copy()
         d[np.isnan(d)] = 0.0
-        msg = self._bridge.cv2_to_imgmsg(d, encoding="32FC1")
+        d = d.astype(np.float32)
+        msg = Image()
         msg.header.stamp    = stamp
         msg.header.frame_id = "camera_optical_frame"
+        msg.height   = d.shape[0]
+        msg.width    = d.shape[1]
+        msg.encoding = "32FC1"
+        msg.step     = d.shape[1] * 4
+        msg.data     = d.tobytes()
         self._pub_depth.publish(msg)
 
     def _publish_camera_info(self, stamp):

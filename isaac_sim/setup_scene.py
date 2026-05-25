@@ -49,6 +49,7 @@ simulation_app = SimulationApp({
 import numpy as np
 import omni
 import omni.usd
+from mars_terrain_builder import build_mars_scene as _build_mars_scene
 from omni.isaac.core import World
 try:
     from isaacsim.core.utils.nucleus import get_assets_root_path  # 5.x
@@ -83,27 +84,25 @@ except ImportError:
 world = World(stage_units_in_meters=1.0)
 assets_root = get_assets_root_path()
 
-# ── Mars terrain ───────────────────────────────────────────────────────────────
-# Primary: NVIDIA's Moon surface (closest to Mars in the asset library).
-# If you have a custom Mars DEM USD, swap the path here.
-TERRAIN_CANDIDATES = [
-    f"{assets_root}/Isaac/Environments/Moon_Surface/moon_surface.usd",
-    f"{assets_root}/Isaac/Environments/Simple_Warehouse/full_warehouse.usd",  # fallback
-    f"{assets_root}/Isaac/Environments/Simple_Room/simple_room.usd",          # last resort
-]
-terrain_loaded = False
-for usd_path in TERRAIN_CANDIDATES:
-    try:
-        add_reference_to_stage(usd_path=usd_path, prim_path="/World/Terrain")
-        print(f"[setup_scene] Terrain loaded: {usd_path}")
-        terrain_loaded = True
-        break
-    except Exception as e:
-        print(f"[setup_scene] Could not load {usd_path}: {e}")
-
-if not terrain_loaded:
-    world.scene.add_default_ground_plane()
-    print("[setup_scene] Using default ground plane (no terrain USD found).")
+# ── Mars terrain, rocks, and lighting (procedural — no remote assets) ──────────
+# Replaces: TERRAIN_CANDIDATES / add_reference_to_stage / add_default_ground_plane
+#           ROCK_CONFIG spheres / DistantLight added later in original code
+# Kept intact: camera prim + OmniGraph (lines 182-350 of original)
+_mars_stage = omni.usd.get_context().get_stage()
+_mars_result = _build_mars_scene(
+    _mars_stage,
+    terrain_path      = "/World/MarsTerrain",
+    rocks_root        = "/World/Rocks",
+    terrain_width     = 20.0,
+    terrain_depth     = 20.0,
+    terrain_nx        = 64,
+    terrain_ny        = 64,
+    terrain_amplitude = 0.30,
+    replace_existing  = True,
+)
+print(f"[setup_scene] Procedural Mars scene built: "
+      f"{len(_mars_result['rock_paths'])} rocks, "
+      f"terrain at /World/MarsTerrain.")
 
 # ── Rover ─────────────────────────────────────────────────────────────────────
 ROVER_USD = f"{assets_root}/Isaac/Robots/Jetbot/jetbot.usd"
@@ -134,33 +133,17 @@ except Exception as _e:
     rover = None
 print(f"[setup_scene] Rover prim at {rover_prim_path}")
 
-# ── Rocks (interest targets) ──────────────────────────────────────────────────
-ROCK_CONFIG = [
-    # (x,    y,     z,    radius,  name_hint)
-    ( 2.0,   0.5,  0.08,  0.25,  "boulder"),
-    (-1.5,   1.8,  0.06,  0.15,  "pebble"),
-    ( 3.5,  -1.2,  0.10,  0.35,  "large_rock"),
-    ( 0.8,   3.0,  0.07,  0.20,  "rock"),
-    (-2.8,  -0.5,  0.12,  0.45,  "outcrop"),
-]
+# ── Rocks: now handled by mars_terrain_builder (33 rocks, 3 materials) ────────
+# The ROCK_CONFIG sphere loop has been replaced.  Rock prims live under
+# /World/Rocks/ and were already created by _build_mars_scene() above.
 stage = omni.usd.get_context().get_stage()
-for i, (x, y, z, r, hint) in enumerate(ROCK_CONFIG):
-    prim_path = f"/World/Rock_{i}_{hint}"
-    define_prim(prim_path, "Sphere")
-    prim = stage.GetPrimAtPath(prim_path)
-    prim.GetAttribute("radius").Set(r)
-    # Set dark reddish-brown colour (Mars rock approximation)
-    if prim.HasAttribute("primvars:displayColor"):
-        prim.GetAttribute("primvars:displayColor").Set([(0.35, 0.20, 0.10)])
-    xform = prim.GetAttribute("xformOp:translate")
-    if not xform:
-        from pxr import UsdGeom
-        xformable = UsdGeom.Xformable(prim)
-        xformable.AddTranslateOp().Set((x, y, z))
-    else:
-        xform.Set((x, y, z))
+print(f"[setup_scene] {len(_mars_result['rock_paths'])} rock prims at /World/Rocks/.")
 
-print(f"[setup_scene] {len(ROCK_CONFIG)} rock prims placed.")
+# ── Lighting: now handled by mars_terrain_builder ─────────────────────────────
+# SunLight (DistantLight, 3500, amber, 28° elevation) and
+# SkyDome  (DomeLight,  600, pink-peach) were created by _build_mars_scene().
+# Nothing to do here — keeping the comment block for traceability.
+print("[setup_scene] Martian lighting already applied by mars_terrain_builder.")
 
 # ── Camera prim (top-level, not tied to Rover chassis which may not have loaded) ─
 camera_prim_path = "/World/Camera"
@@ -177,46 +160,10 @@ try:
 except Exception as _e:
     print(f"[setup_scene] Camera transform warning: {_e}")
 
-# ── Render product (needed for OmniGraph camera publisher) ────────────────────
+# Render product and camera OmniGraph are set up AFTER world.reset() below.
+# Creating them before reset attaches them to an uninitialised pipeline → black frames.
 _render_product_path = ""
-try:
-    import omni.replicator.core as rep
-    _rp = rep.create.render_product(camera_prim_path, (1280, 720))
-    _render_product_path = _rp.path
-    print(f"[setup_scene] Render product ready: {_render_product_path}")
-except Exception as _e:
-    print(f"[setup_scene] Render product failed ({_e}) — camera OmniGraph will be skipped.")
-
-# ── OmniGraph: camera RGB + depth publisher ───────────────────────────────────
-if _render_product_path:
-    for _cam_type, _topic in [("rgb",   "/isaac_camera/rgb"),
-                               ("depth", "/isaac_camera/depth")]:
-        try:
-            og.Controller.edit(
-                {"graph_path": f"/World/Cam{_cam_type.capitalize()}Graph",
-                 "evaluator_name": "execution"},
-                {
-                    og.Controller.Keys.CREATE_NODES: [
-                        ("OnTick",    "omni.graph.action.OnTick"),
-                        ("CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                    ],
-                    og.Controller.Keys.SET_VALUES: [
-                        ("CamHelper.inputs:renderProductPath",    _render_product_path),
-                        ("CamHelper.inputs:topicName",            _topic),
-                        ("CamHelper.inputs:type",                 _cam_type),
-                        ("CamHelper.inputs:frameId",              "camera_optical_frame"),
-                        ("CamHelper.inputs:enableSemanticLabels", False),
-                    ],
-                    og.Controller.Keys.CONNECT: [
-                        ("OnTick.outputs:tick", "CamHelper.inputs:execIn"),
-                    ],
-                },
-            )
-            print(f"[setup_scene] OmniGraph camera '{_cam_type}' → {_topic}")
-        except Exception as _e:
-            print(f"[setup_scene] Camera {_cam_type} OmniGraph failed (non-fatal): {_e}")
-else:
-    print("[setup_scene] Skipping camera OmniGraph (no render product).")
+import omni.replicator.core as rep
 
 # ── OmniGraph: odometry publisher ─────────────────────────────────────────────
 try:
@@ -322,13 +269,63 @@ except Exception as _e:
     print(f"[setup_scene] world.reset() warning: {_e}")
     print("[setup_scene] Continuing — rover articulation may be unavailable, camera + OmniGraph still work.")
 
+# ── Warm-up + render product (MUST be after world.reset) ─────────────────────
+# world.reset() initialises the rendering pipeline. Creating the render product
+# before reset returns a dead Hydra texture → zero pixel frames. We step a few
+# times first so the pipeline is fully live before attaching the camera target.
+print("[setup_scene] Warming up renderer before creating render product...")
+for _ in range(10):
+    world.step(render=True)
+
+try:
+    _rp = rep.create.render_product(camera_prim_path, (1280, 720))
+    _render_product_path = _rp.path
+    print(f"[setup_scene] Render product ready (post-reset): {_render_product_path}")
+except Exception as _e:
+    print(f"[setup_scene] Render product failed ({_e}) — camera will be skipped.")
+
+# ── OmniGraph: camera RGB + depth publisher (post-reset) ─────────────────────
+if _render_product_path:
+    for _cam_type, _topic in [("rgb",   "/isaac_camera/rgb"),
+                               ("depth", "/isaac_camera/depth")]:
+        try:
+            og.Controller.edit(
+                {"graph_path": f"/World/Cam{_cam_type.capitalize()}Graph",
+                 "evaluator_name": "execution"},
+                {
+                    og.Controller.Keys.CREATE_NODES: [
+                        ("OnTick",    "omni.graph.action.OnTick"),
+                        ("CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ],
+                    og.Controller.Keys.SET_VALUES: [
+                        ("CamHelper.inputs:renderProductPath",    _render_product_path),
+                        ("CamHelper.inputs:topicName",            _topic),
+                        ("CamHelper.inputs:type",                 _cam_type),
+                        ("CamHelper.inputs:frameId",              "camera_optical_frame"),
+                        ("CamHelper.inputs:enableSemanticLabels", False),
+                    ],
+                    og.Controller.Keys.CONNECT: [
+                        ("OnTick.outputs:tick", "CamHelper.inputs:execIn"),
+                    ],
+                },
+            )
+            print(f"[setup_scene] OmniGraph camera '{_cam_type}' → {_topic}")
+        except Exception as _e:
+            print(f"[setup_scene] Camera {_cam_type} OmniGraph failed (non-fatal): {_e}")
+else:
+    print("[setup_scene] Skipping camera OmniGraph (no render product).")
+
 print("\n[setup_scene] Simulation running.")
 print("[setup_scene] In a new terminal, run:")
-print("  ros2 run mars_scout_sim_bridge topic_inspector")
 print("  ros2 launch mars_scout_sim_bridge sim_bridge.launch.py")
 print()
 
 while simulation_app.is_running():
     world.step(render=True)
+    # Step the replicator orchestrator so the camera annotator flushes each frame
+    try:
+        rep.orchestrator.step(pause_timeline=False)
+    except Exception:
+        pass
 
 simulation_app.close()

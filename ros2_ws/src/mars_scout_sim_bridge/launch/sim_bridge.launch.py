@@ -56,7 +56,7 @@ def generate_launch_description():
         executable = "perception_node",
         name       = "perception_node",
         output     = "screen",
-        parameters = [{"vlm_backend": "moondream2"}],
+        parameters = [{"backend": "mock"}],   # switch to moondream2 once installed
     )
 
     projection = Node(

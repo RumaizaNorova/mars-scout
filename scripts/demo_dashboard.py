@@ -39,6 +39,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PointStamped
 
+try:
+    from mars_scout_msgs.msg import TerrainTarget as _TerrainTarget
+    HAS_TERRAIN_TARGET = True
+except ImportError:
+    HAS_TERRAIN_TARGET = False
+    _TerrainTarget = PointStamped   # fallback type (never matched)
+
 _SENSOR_QOS = QoSProfile(
     depth=5,
     reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -152,8 +159,12 @@ class DashboardNode(Node):
 
         self.create_subscription(Image, "/rover/camera/image_raw",
                                  self._cb_image, _SENSOR_QOS)
-        self.create_subscription(PointStamped, "/rover/geometry/terrain_target",
-                                 self._cb_target, 10)
+        if HAS_TERRAIN_TARGET:
+            self.create_subscription(_TerrainTarget, "/rover/geometry/terrain_target",
+                                     self._cb_target, 10)
+        else:
+            self.create_subscription(PointStamped, "/rover/geometry/terrain_target",
+                                     self._cb_target, 10)
 
         if HAS_ROVER_STATE:
             self.create_subscription(RoverState, "/rover/state",
@@ -195,11 +206,18 @@ class DashboardNode(Node):
             _state["active_query"]  = msg.active_query_text
             _state["dist_to_goal"]  = float(msg.distance_to_goal)
 
-    def _cb_target(self, msg: PointStamped):
+    def _cb_target(self, msg):
+        # Handles both TerrainTarget and PointStamped (fallback)
         with _lock:
-            _state["target_x"] = float(msg.point.x)
-            _state["target_y"] = float(msg.point.y)
-            _state["last_target_ts"] = time.monotonic()
+            if HAS_TERRAIN_TARGET and isinstance(msg, _TerrainTarget):
+                if msg.target_found and msg.waypoint.header.frame_id:
+                    _state["target_x"] = float(msg.waypoint.point.x)
+                    _state["target_y"] = float(msg.waypoint.point.y)
+                    _state["last_target_ts"] = time.monotonic()
+            else:
+                _state["target_x"] = float(msg.point.x)
+                _state["target_y"] = float(msg.point.y)
+                _state["last_target_ts"] = time.monotonic()
 
 
 # ---------------------------------------------------------------------------

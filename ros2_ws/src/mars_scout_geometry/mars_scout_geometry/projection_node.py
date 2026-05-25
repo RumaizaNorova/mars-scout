@@ -32,7 +32,6 @@ from rclpy.time import Time
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped, Point, Vector3
 from visualization_msgs.msg import Marker
-from cv_bridge import CvBridge
 import tf2_ros
 import tf2_geometry_msgs   # noqa: F401  (registers PointStamped transform support)
 
@@ -58,7 +57,6 @@ class ProjectionNode(Node):
         self._map_frame = self.get_parameter("map_frame").value
 
         # ── State ─────────────────────────────────────────────────────────────
-        self._bridge     = CvBridge()
         self._cam_model  = None   # built once CameraInfo arrives
         self._ransac     = RANSACGroundFit(
             n_iters       = self.get_parameter("ransac_iters").value,
@@ -99,8 +97,11 @@ class ProjectionNode(Node):
                                f"fx={intr.fx:.1f} fy={intr.fy:.1f}")
 
     def _cb_depth(self, msg: Image):
-        depth = self._bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
-        self._latest_depth = np.array(depth, dtype=np.float32)
+        # Manual decode — no cv_bridge needed; 32FC1 = raw float32 bytes
+        depth = np.frombuffer(msg.data, dtype=np.float32).reshape(
+            (msg.height, msg.width)
+        )
+        self._latest_depth = depth.copy()
 
         # Pre-compute point cloud for RANSAC (runs once per depth frame)
         if self._cam_model is not None:

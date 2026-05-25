@@ -21,10 +21,10 @@ min_confidence   : float                   suppress targets below this (default:
 
 from __future__ import annotations
 import uuid
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
 
 from mars_scout_msgs.msg import TerrainQuery, TerrainTarget
 from mars_scout_perception.vlm_backend   import VLMResult, BoundingBox
@@ -53,7 +53,6 @@ class PerceptionNode(Node):
         self.get_logger().info(f"VLM backend: {self._vlm.name}")
 
         # ── State ─────────────────────────────────────────────────────────────
-        self._bridge       = CvBridge()
         self._latest_frame = None
 
         # ── Subscribers ───────────────────────────────────────────────────────
@@ -85,7 +84,7 @@ class PerceptionNode(Node):
         if self._latest_frame is None:
             return
 
-        bgr = self._bridge.imgmsg_to_cv2(self._latest_frame, desired_encoding="bgr8")
+        bgr = self._ros_image_to_bgr(self._latest_frame)
         result: VLMResult = self._vlm.query(bgr, self._query)
 
         msg = self._result_to_msg(result, self._latest_frame.header)
@@ -96,6 +95,18 @@ class PerceptionNode(Node):
             f"conf={result.confidence:.2f}  {result.inference_ms:.0f}ms  "
             f"'{result.description[:60]}'"
         )
+
+    # ── Image conversion (no cv_bridge — works with any numpy version) ────────
+
+    @staticmethod
+    def _ros_image_to_bgr(msg: Image) -> np.ndarray:
+        """Convert a sensor_msgs/Image to a (H,W,3) BGR uint8 numpy array."""
+        arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+            (msg.height, msg.width, -1)
+        )
+        if msg.encoding.lower() == "rgb8":
+            arr = arr[:, :, ::-1].copy()
+        return arr
 
     # ── Conversion ────────────────────────────────────────────────────────────
 
