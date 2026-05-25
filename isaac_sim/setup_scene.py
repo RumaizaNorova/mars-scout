@@ -93,11 +93,11 @@ _mars_result = _build_mars_scene(
     _mars_stage,
     terrain_path      = "/World/MarsTerrain",
     rocks_root        = "/World/Rocks",
-    terrain_width     = 20.0,
-    terrain_depth     = 20.0,
-    terrain_nx        = 64,
-    terrain_ny        = 64,
-    terrain_amplitude = 0.30,
+    terrain_width     = 40.0,
+    terrain_depth     = 40.0,
+    terrain_nx        = 80,
+    terrain_ny        = 80,
+    terrain_amplitude = 0.70,
     replace_existing  = True,
 )
 print(f"[setup_scene] Procedural Mars scene built: "
@@ -152,11 +152,15 @@ camera_prim = stage.GetPrimAtPath(camera_prim_path)
 try:
     from pxr import UsdGeom, Gf
     _xf = UsdGeom.Xformable(camera_prim)
-    _xf.AddTranslateOp().Set((0.0, 0.0, 0.3))     # 30 cm above ground
-    _xf.AddRotateXYZOp().Set((-15.0, 0.0, 0.0))   # 15° nose-down
-    camera_prim.GetAttribute("focalLength").Set(24.0)
+    _xf.AddTranslateOp().Set((0.0, 0.0, 1.5))      # 1.5 m — rover mast height
+    # Isaac Sim camera default faces -Z (straight down in Z-up world).
+    # rotateXYZ(75, 0, -90):
+    #   rotX(75°): -Z → (0, sin75, -cos75) = mostly +Y, slightly -Z
+    #   rotZ(-90°): swings +Y → +X  →  camera now faces +X with 15° nose-down ✓
+    _xf.AddRotateXYZOp().Set((75.0, 0.0, -90.0))
+    camera_prim.GetAttribute("focalLength").Set(18.0)   # wider FOV to see more terrain
     camera_prim.GetAttribute("clippingRange").Set(Gf.Vec2f(0.01, 10000.0))
-    print(f"[setup_scene] Camera prim at {camera_prim_path} (15° tilt, f/24)")
+    print(f"[setup_scene] Camera prim at {camera_prim_path} (facing +X, 15° down, f/18)")
 except Exception as _e:
     print(f"[setup_scene] Camera transform warning: {_e}")
 
