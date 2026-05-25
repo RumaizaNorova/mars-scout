@@ -101,10 +101,10 @@ class SimBridgeNode(Node):
         cmdvel_out = self.get_parameter("isaac_cmdvel_topic").value
 
         # ── publishers (Mars Scout standard) ──────────────────────────────────
-        self._pub_rgb   = self.create_publisher(Image,      "/rover/camera/image_raw",       _SENSOR_QOS)
-        self._pub_depth = self.create_publisher(Image,      "/rover/camera/depth/image_raw", _SENSOR_QOS)
-        self._pub_info  = self.create_publisher(CameraInfo, "/rover/camera/camera_info",     _SENSOR_QOS)
-        self._pub_odom  = self.create_publisher(Odometry,   "/rover/odom",                   _SENSOR_QOS)
+        self._pub_rgb   = self.create_publisher(Image,      "/rover/camera/image_raw",       _RELIABLE_QOS)
+        self._pub_depth = self.create_publisher(Image,      "/rover/camera/depth/image_raw", _RELIABLE_QOS)
+        self._pub_info  = self.create_publisher(CameraInfo, "/rover/camera/camera_info",     _RELIABLE_QOS)
+        self._pub_odom  = self.create_publisher(Odometry,   "/rover/odom",                   _RELIABLE_QOS)
         self._pub_state = self.create_publisher(RoverState, "/rover/state",                  _RELIABLE_QOS)
 
         # ── cmd_vel passthrough (rover → Isaac Sim) ────────────────────────────
