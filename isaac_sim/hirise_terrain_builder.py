@@ -396,9 +396,10 @@ def _bind_material(
 
 _ROCK_SIZE_CLASSES = [
     # (name,    diameter_m, count, height_range,   scale_variance, materials)
-    ("boulder",  2.5,       8,    (0.8, 2.5),     0.40, ["Basalt", "IronRich"]),
-    ("cobble",   0.8,      18,    (0.3, 1.0),     0.35, ["Basalt", "Sandstone", "IronRich"]),
-    ("pebble",   0.25,     30,    (0.08, 0.35),   0.30, ["MarsOxide", "Basalt", "Sandstone", "PaleDust"]),
+    # Counts scaled for 500×500 m terrain (CFA formula, Golombek et al. 2008)
+    ("boulder",  2.5,       50,   (0.8, 2.5),     0.40, ["Basalt", "IronRich"]),
+    ("cobble",   0.8,      150,   (0.3, 1.0),     0.35, ["Basalt", "Sandstone", "IronRich"]),
+    ("pebble",   0.25,     250,   (0.08, 0.35),   0.30, ["MarsOxide", "Basalt", "Sandstone", "PaleDust"]),
 ]
 
 
@@ -492,13 +493,12 @@ def _place_rocks(
 
     for cls_name, diam_m, count, (h_min, h_max), scale_var, mat_names in _ROCK_SIZE_CLASSES:
         for _ in range(count):
-            # Placement strategy: 70% in front (positive X), 30% anywhere
-            if rng.random() < 0.70:
-                # In front of camera: x in [1.0, terrain_w*0.45]
-                x = rng.uniform(1.0, terrain_w * 0.45)
-                # Within ±60° cone from +X axis
-                y_max = x * math.tan(math.radians(60))
-                y = rng.uniform(-y_max, y_max)
+            # Placement strategy:
+            #   40% near rover start (first 50m, ±30m wide) — visible immediately
+            #   60% spread across full terrain — for autonomous navigation to find
+            if rng.random() < 0.40:
+                x = rng.uniform(2.0, min(50.0, terrain_w * 0.45))
+                y = rng.uniform(-30.0, 30.0)
             else:
                 x = rng.uniform(-terrain_w * 0.45, terrain_w * 0.45)
                 y = rng.uniform(-terrain_d * 0.45, terrain_d * 0.45)

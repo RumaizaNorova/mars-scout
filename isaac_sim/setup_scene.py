@@ -95,14 +95,14 @@ _mars_result = _build_mars_scene(
     _mars_stage,
     terrain_path      = "/World/MarsTerrain",
     rocks_root        = "/World/Rocks",
-    terrain_width     = 40.0,
-    terrain_depth     = 40.0,
-    terrain_nx        = 128,
-    terrain_ny        = 128,
+    terrain_width     = 500.0,
+    terrain_depth     = 500.0,
+    terrain_nx        = 512,
+    terrain_ny        = 512,
     terrain_amplitude = 0.70,
     replace_existing  = True,
     hirise_dtm_path   = _HIRISE_PATH if _os.path.exists(_HIRISE_PATH) else None,
-    hirise_patch_size = 200.0,
+    hirise_patch_size = 500.0,
 )
 print(f"[setup_scene] Procedural Mars scene built: "
       f"{len(_mars_result['rock_paths'])} rocks, "

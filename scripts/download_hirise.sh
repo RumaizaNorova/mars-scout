@@ -24,16 +24,13 @@ fi
 
 echo "[download_hirise] Downloading Jezero Crater HiRISE DTM..."
 
-# ── Primary source: USGS Astrogeology HiRISE mosaic (1 m/px, ~248 MB) ────────
-PRIMARY_URL="https://planetarymaps.usgs.gov/mosaic/Mars_MRO_HiRISE_Jezero_Crater_DTM_1m.tif"
+# ── Primary: Mars 2020 HiRISE DTM mosaic (1 m/px, ~1.76 GB, verified) ────────
+PRIMARY_URL="https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/mars2020_trn/HiRISE/JEZ_hirise_soc_006_DTM_MOLAtopography_DeltaGeoid_1m_Eqc_latTs0_lon0_blend40.tif"
 
-# ── Fallback 1: Murray Lab CTX mosaic (6 m/px, ~40 MB) ───────────────────────
-# Good for terrain shape, lower resolution.
-FALLBACK_CTX="https://murray-lab.caltech.edu/CTX/V01/tiles/Murray-Lab-CTX-Mosaic-V01_equirect_tiles_18N_282E_v01.tif"
+# ── Fallback: CTX mosaic (20 m/px, ~9 MB, verified) ─────────────────────────
+FALLBACK_CTX="https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/mars2020_trn/CTX/JEZ_ctx_B_soc_008_DTM_MOLAtopography_DeltaGeoid_20m_Eqc_latTs0_lon0.tif"
 
-# ── Fallback 2: MOLA PEDR interpolated (128 px/degree, ~15 MB patch) ─────────
-# Lowest quality but always available.
-FALLBACK_MOLA="https://astrogeology.usgs.gov/download/Mars/GlobalSurveyor/MOLA/Mars_MGS_MOLA_DEM_mosaic_global_463m.tif"
+FALLBACK_MOLA=""  # no longer needed
 
 download_url() {
     local url="$1"
