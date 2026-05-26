@@ -49,7 +49,7 @@ simulation_app = SimulationApp({
 import numpy as np
 import omni
 import omni.usd
-from mars_terrain_builder import build_mars_scene as _build_mars_scene
+from hirise_terrain_builder import build_mars_scene as _build_mars_scene
 from omni.isaac.core import World
 try:
     from isaacsim.core.utils.nucleus import get_assets_root_path  # 5.x
@@ -89,16 +89,20 @@ assets_root = get_assets_root_path()
 #           ROCK_CONFIG spheres / DistantLight added later in original code
 # Kept intact: camera prim + OmniGraph (lines 182-350 of original)
 _mars_stage = omni.usd.get_context().get_stage()
+import os as _os
+_HIRISE_PATH = _os.path.expanduser("~/mars-rover-agent/data/jezero_hirise.tif")
 _mars_result = _build_mars_scene(
     _mars_stage,
     terrain_path      = "/World/MarsTerrain",
     rocks_root        = "/World/Rocks",
     terrain_width     = 40.0,
     terrain_depth     = 40.0,
-    terrain_nx        = 80,
-    terrain_ny        = 80,
+    terrain_nx        = 128,
+    terrain_ny        = 128,
     terrain_amplitude = 0.70,
     replace_existing  = True,
+    hirise_dtm_path   = _HIRISE_PATH if _os.path.exists(_HIRISE_PATH) else None,
+    hirise_patch_size = 200.0,
 )
 print(f"[setup_scene] Procedural Mars scene built: "
       f"{len(_mars_result['rock_paths'])} rocks, "
