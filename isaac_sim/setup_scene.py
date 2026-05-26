@@ -90,15 +90,13 @@ world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
 
 # ── Mars gravity ──────────────────────────────────────────────────────────────
-# Perseverance experiences 3.72 m/s² on Mars (vs 9.81 m/s² on Earth)
+# Use World's built-in physics context — avoids creating a second /physicsScene
+# that conflicts with Isaac Sim's own and causes TGS solver crashes.
 try:
-    from pxr import UsdPhysics
-    physics_scene_path = "/physicsScene"
-    if not stage.GetPrimAtPath(physics_scene_path).IsValid():
-        UsdPhysics.Scene.Define(stage, physics_scene_path)
-    physics_scene = UsdPhysics.Scene(stage.GetPrimAtPath(physics_scene_path))
-    physics_scene.CreateGravityDirectionAttr().Set((0.0, 0.0, -1.0))
-    physics_scene.CreateGravityMagnitudeAttr().Set(3.72)
+    from pxr import Gf as _Gf
+    _phys = world.get_physics_context()
+    _phys.set_gravity_direction(_Gf.Vec3f(0.0, 0.0, -1.0))
+    _phys.set_gravity_magnitude(3.72)
     print("[setup_scene] Mars gravity: 3.72 m/s²")
 except Exception as _e:
     print(f"[setup_scene] Gravity warning: {_e} (defaulting to Earth gravity)")

@@ -343,8 +343,8 @@ def _build_chassis(stage, root: str) -> None:
     # PhysX articulation settings
     physx_art = PhysxSchema.PhysxArticulationAPI.Apply(rover_prim)
     physx_art.CreateEnabledSelfCollisionsAttr(False)
-    physx_art.CreateSolverPositionIterationCountAttr(32)
-    physx_art.CreateSolverVelocityIterationCountAttr(8)
+    physx_art.CreateSolverPositionIterationCountAttr(8)   # TGS max safe = 8
+    physx_art.CreateSolverVelocityIterationCountAttr(4)   # TGS max safe = 4
 
     # Body mesh
     body_path = f"{root}/Body"
