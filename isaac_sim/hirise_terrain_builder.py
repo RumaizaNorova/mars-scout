@@ -668,8 +668,15 @@ def build_mars_scene(
         terrain_width, terrain_depth,
         materials, rng,
     )
+    counts = {cls: 0 for cls, *_ in _ROCK_SIZE_CLASSES}
+    for p in rock_paths:
+        for cls, *_ in _ROCK_SIZE_CLASSES:
+            if f"/{cls}_" in p:
+                counts[cls] += 1
     print(f"[hirise_terrain] Placed {len(rock_paths)} rocks "
-          f"(8 boulders, 18 cobbles, 30 pebbles)")
+          f"({counts.get('boulder',0)} boulders, "
+          f"{counts.get('cobble',0)} cobbles, "
+          f"{counts.get('pebble',0)} pebbles)")
 
     # ── 6. Lighting ───────────────────────────────────────────────────────────
     _build_martian_lighting(stage)

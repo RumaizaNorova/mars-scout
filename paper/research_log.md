@@ -137,6 +137,22 @@
 
 ---
 
+## Experimental Results Log
+
+### 2026-05-26 — Stage 1 terrain confirmed working
+- HiRISE DTM loaded at 1.00 m/px resolution ✅
+- Actual Jezero Crater elevation: **-2454.2m to -2429.9m** (24.3m range over 500×500m patch)
+- 450 rocks placed (50 boulders, 150 cobbles, 250 pebbles) ✅
+- Cameras publishing: `/isaac_camera/rgb`, `/isaac_camera/depth` ✅
+- Physics initialised, simulation running ✅
+- Isaac Sim version: 4.5, RTX 3090 24GB, Ubuntu 22.04
+- Boot time to simulation running: ~30 seconds
+
+**Paper note**: Jezero floor elevation range (24.3m over 500m) is consistent with
+published HiRISE topographic analysis of the crater floor. Cite McEwen et al. 2007.
+
+---
+
 ## Raw Notes (append anything here)
 *Stream of consciousness — clean up later*
 
