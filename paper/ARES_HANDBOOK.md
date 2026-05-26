@@ -79,7 +79,7 @@ ARES is the first to put all four together in one system.
 | Property | Mars | Earth | Why it matters for ARES |
 |---|---|---|---|
 | Gravity | 3.72 m/s² | 9.81 m/s² | Wheels behave differently; physics must match |
-| Day length | 24h 37min (1 sol) | 24h 00min | Mission planning in "sols" not days |
+| Day length | 24h 39min 35s (1 sol) | 24h 00min | Mission planning in "sols" not days |
 | Distance from Earth | 54–401 million km | — | 3–22 minute signal delay each way |
 | Surface temperature | -80°C to +20°C | -90°C to +60°C | Why electronics are heated |
 | Atmosphere | 0.6% of Earth's | 100% | No weather effects in sim (simplified) |
@@ -132,7 +132,7 @@ The crater floor is geologically fascinating: ancient lake bed sediments, volcan
 |---|---|---|---|
 | Sojourner | 1997 | 83 sols | First Mars rover. Size of a microwave. |
 | Spirit | 2004 | 2208 sols | Found evidence of past water exposure |
-| Opportunity | 2004 | 5498 sols | Drove 45.16 km — marathon on Mars |
+| Opportunity | 2004 | 5111 sols | Drove 45.16 km — marathon on Mars |
 | Curiosity | 2012 | Still operating | Found organic molecules, measured radiation |
 | Perseverance | 2021 | Still operating | Searching for biosignatures, caching samples |
 
@@ -245,7 +245,7 @@ Every joint, every mass, every limit is physically meaningful. This matters for 
 
 ### What is AEGIS?
 
-AEGIS (Autonomous Exploration for Gathering Increased Science) is NASA JPL's **real onboard autonomous science system** deployed on the Curiosity and Opportunity rovers since 2009–2016. It is the baseline we compare ARES against.
+AEGIS (Autonomous Exploration for Gathering Increased Science) is NASA JPL's **real onboard autonomous science system**, first deployed on the Opportunity rover in 2010–2011 and later on Curiosity. It is the baseline we compare ARES against.
 
 ### How AEGIS works
 
@@ -259,9 +259,13 @@ AEGIS uses **traditional computer vision** — edge detection, texture analysis,
 
 ### AEGIS performance (from published papers)
 
-- **Precision**: ~78% (of targets it selected, ~78% were rated good by scientists)
-- **Recall**: ~71% (of all good targets in view, it found ~71%)
+- **Precision**: ~70–80% range (exact number: verify from Wagstaff et al. papers before citing)
+- **Recall**: ~65–75% range (exact number: verify from Wagstaff et al. papers before citing)
 - **Main weakness**: misses rocks covered in dust, fails on novel rock types
+
+> ⚠️ **Paper note**: Do not use the above numbers directly. Look up the actual values in:
+> Wagstaff et al., "Guiding Scientific Discovery with Explanations Using DEMUD" (AAAI 2013)
+> and the AEGIS deployment papers on Opportunity/Curiosity before submission.
 
 ### Why ARES should beat AEGIS
 
@@ -529,8 +533,8 @@ This is fundamentally different from traditional computer vision which classifie
 | Property | Value |
 |---|---|
 | Model size | ~1.9 billion parameters |
-| VRAM at 4-bit quantization | ~2.45 GB |
-| Speed on RTX 3090 | ~184 tokens/second |
+| VRAM at 4-bit quantization | ~2–3 GB (re-measure at Stage 4) |
+| Speed on RTX 3090 | re-benchmark at Stage 4 implementation |
 | Task | Visual question answering + detection |
 
 "4-bit quantization" means the model weights are stored with lower precision (4 bits per number instead of 32). This reduces quality slightly but cuts memory usage by 8×, making the model fit alongside Isaac Sim on the same GPU.
