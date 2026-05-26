@@ -106,7 +106,8 @@ class RoverDims:
 
     # Mast
     MAST_H          = 1.80    # mast height above chassis top
-    MAST_CAM_FWD    = 0.15    # camera forward offset from mast centre
+    MAST_HEAD_FWD   = 0.15    # mast head box centre (visual)
+    MAST_CAM_FWD    = 0.50    # camera forward offset — must clear head box (0.35m wide → half=0.175m + margin)
 
     # Chase camera offset from chassis centre
     CHASE_X         = -4.00   # behind rover
@@ -379,7 +380,7 @@ def _build_mast(stage, root: str) -> None:
     _box_mesh(stage, mast_head, 0.35, 0.20, 0.20,
               color=(0.5, 0.48, 0.44))
     UsdGeom.Xformable(stage.GetPrimAtPath(mast_head)).AddTranslateOp().Set(
-        Gf.Vec3d(D.MAST_CAM_FWD, 0, D.MAST_H))
+        Gf.Vec3d(D.MAST_HEAD_FWD, 0, D.MAST_H))
 
     # MastCam-Z LEFT (NavCam)
     cam_l = f"{mast_root}/MastCamL"

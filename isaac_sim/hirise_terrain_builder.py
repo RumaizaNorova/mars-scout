@@ -555,23 +555,32 @@ def _build_martian_lighting(stage: "Usd.Stage") -> None:
     else:
         sun = UsdLux.DistantLight(stage.GetPrimAtPath(sun_path))
 
-    sun.CreateIntensityAttr(3500.0)
-    sun.CreateColorAttr(Gf.Vec3f(1.0, 0.72, 0.38))  # 3400K amber
-    sun.CreateAngleAttr(0.53)                         # solar disc angular diameter
+    # Mars solar irradiance: ~590 W/m² (vs Earth 1000 W/m²) → ~59% of Earth noon.
+    # Isaac Sim DistantLight intensity ~= lux. Earth clear noon ~100000 lux.
+    # Mars equivalent: ~59000 lux. We use 55000 to account for dust opacity tau~0.5.
+    # Sun COLOR: Perseverance Mastcam-Z calibration images show the Martian sun
+    # appears near-white with very slight warm tint (dust absorbs blue slightly).
+    # NOT the deep amber we had — that was causing the yellow-wash on terrain.
+    # Reference: Bell et al. 2021, Space Science Reviews (Mastcam-Z instrument paper)
+    sun.CreateIntensityAttr(55000.0)
+    sun.CreateColorAttr(Gf.Vec3f(1.0, 0.95, 0.88))   # near-white, slight warm tint
+    sun.CreateAngleAttr(0.35)                          # Mars: sun subtends ~0.35° (smaller than Earth's 0.53°)
 
-    # Orient sun: 28° above horizon from south-west (Jezero morning)
+    # Orient sun: 28° above horizon from south-west (Jezero morning local time)
     sun_xf = UsdGeom.Xformable(sun.GetPrim())
     sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-(90.0 - 28.0), 0.0, 45.0))
 
-    # Sky dome (DomeLight)
+    # Sky dome — Martian sky is dusty pinkish-tan (iron dust aerosols scatter red).
+    # Perseverance sky images: RGB approx (0.58, 0.42, 0.32) normalised.
+    # Intensity: diffuse skylight ~7% of direct solar = ~3900 lux.
     sky_path = "/World/SkyDome"
     if not stage.GetPrimAtPath(sky_path).IsValid():
         sky = UsdLux.DomeLight.Define(stage, sky_path)
     else:
         sky = UsdLux.DomeLight(stage.GetPrimAtPath(sky_path))
 
-    sky.CreateIntensityAttr(600.0)
-    sky.CreateColorAttr(Gf.Vec3f(0.78, 0.55, 0.42))  # dusty pink-peach sky
+    sky.CreateIntensityAttr(4000.0)
+    sky.CreateColorAttr(Gf.Vec3f(0.58, 0.42, 0.32))  # dusty pinkish-tan (Perseverance sky)
 
 
 # =============================================================================
