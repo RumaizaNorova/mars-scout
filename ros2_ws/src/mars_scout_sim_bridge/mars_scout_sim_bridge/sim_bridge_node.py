@@ -107,6 +107,7 @@ class SimBridgeNode(Node):
         self._pub_info  = self.create_publisher(CameraInfo, "/rover/camera/camera_info",     _RELIABLE_QOS)
         self._pub_odom  = self.create_publisher(Odometry,   "/rover/odom",                   _RELIABLE_QOS)
         self._pub_state = self.create_publisher(RoverState, "/rover/state",                  _RELIABLE_QOS)
+        self._pub_chase = self.create_publisher(Image,      "/rover/chase_cam",              _RELIABLE_QOS)
 
         # ── cmd_vel passthrough (rover → Isaac Sim) ────────────────────────────
         self._pub_cmdvel = self.create_publisher(Twist, cmdvel_out, _RELIABLE_QOS)
@@ -114,10 +115,11 @@ class SimBridgeNode(Node):
                                  self._on_cmdvel, _RELIABLE_QOS)
 
         # ── subscribers (Isaac Sim) ────────────────────────────────────────────
-        self.create_subscription(Image,      rgb_in,   self._on_rgb,   _SENSOR_QOS)
-        self.create_subscription(Image,      depth_in, self._on_depth, _SENSOR_QOS)
-        self.create_subscription(CameraInfo, info_in,  self._on_info,  _SENSOR_QOS)
-        self.create_subscription(Odometry,   odom_in,  self._on_odom,  _SENSOR_QOS)
+        self.create_subscription(Image,      rgb_in,              self._on_rgb,   _SENSOR_QOS)
+        self.create_subscription(Image,      depth_in,            self._on_depth, _SENSOR_QOS)
+        self.create_subscription(CameraInfo, info_in,             self._on_info,  _SENSOR_QOS)
+        self.create_subscription(Odometry,   odom_in,             self._on_odom,  _SENSOR_QOS)
+        self.create_subscription(Image,      "/isaac_camera/chase", self._on_chase, _SENSOR_QOS)
 
         # ── TF broadcaster ────────────────────────────────────────────────────
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -215,6 +217,12 @@ class SimBridgeNode(Node):
         self._broadcast_tf(msg)
 
     # ── cmd_vel passthrough ───────────────────────────────────────────────────
+
+    def _on_chase(self, msg: Image):
+        """Republish chase camera — 3rd-person view of the rover."""
+        msg.header.frame_id = "chase_cam_frame"
+        msg.header.stamp = self._fix_stamp(msg.header.stamp)
+        self._pub_chase.publish(msg)
 
     def _on_cmdvel(self, msg: Twist):
         """Forward rover velocity commands to whatever topic Isaac Sim reads."""
