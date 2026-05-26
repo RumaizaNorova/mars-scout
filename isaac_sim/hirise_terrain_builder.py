@@ -562,8 +562,11 @@ def _build_martian_lighting(stage: "Usd.Stage") -> None:
     # appears near-white with very slight warm tint (dust absorbs blue slightly).
     # NOT the deep amber we had — that was causing the yellow-wash on terrain.
     # Reference: Bell et al. 2021, Space Science Reviews (Mastcam-Z instrument paper)
-    sun.CreateIntensityAttr(55000.0)
-    sun.CreateColorAttr(Gf.Vec3f(1.0, 0.95, 0.88))   # near-white, slight warm tint
+    # Isaac Sim DistantLight intensity is NOT physical lux — internal renderer units.
+    # Empirically calibrated: 4500 gives correct exposure without washout.
+    # Color: near-neutral (Perseverance Mastcam-Z shows sun as white, not amber).
+    sun.CreateIntensityAttr(4500.0)
+    sun.CreateColorAttr(Gf.Vec3f(1.0, 0.93, 0.88))   # near-white, very slight warm tint
     sun.CreateAngleAttr(0.35)                          # Mars: sun subtends ~0.35° (smaller than Earth's 0.53°)
 
     # Orient sun: 28° above horizon from south-west (Jezero morning local time)
@@ -579,7 +582,7 @@ def _build_martian_lighting(stage: "Usd.Stage") -> None:
     else:
         sky = UsdLux.DomeLight(stage.GetPrimAtPath(sky_path))
 
-    sky.CreateIntensityAttr(4000.0)
+    sky.CreateIntensityAttr(250.0)
     sky.CreateColorAttr(Gf.Vec3f(0.58, 0.42, 0.32))  # dusty pinkish-tan (Perseverance sky)
 
 
