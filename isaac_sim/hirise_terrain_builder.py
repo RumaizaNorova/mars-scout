@@ -640,6 +640,299 @@ def _compute_terrain_slope(elevation: np.ndarray, cell_size: float) -> np.ndarra
     return np.sqrt(dx ** 2 + dy ** 2).astype(np.float32)
 
 
+# ── Aeolian ripple deformation ────────────────────────────────────────────────
+
+def _add_aeolian_ripples(
+    elevation:          np.ndarray,
+    terrain_w:          float,
+    terrain_d:          float,
+    wavelength:         float = 3.5,    # metres  (Chojnacki 2018, HiRISE measurement)
+    height:             float = 0.15,   # metres  (Bridges 2017, Bagnold Dunes analogue)
+    transport_azimuth:  float = 276.0,  # degrees (WNW modern wind, Chojnacki 2018)
+    stoss_fraction:     float = 0.75,   # 75 % gentle stoss / 25 % steep lee
+    megaripple_prob:    float = 0.15,   # fraction of area with large megaripples
+) -> np.ndarray:
+    """
+    Add asymmetric aeolian ripples to an elevation array.
+
+    TWO WIND SYSTEMS at Jezero (Chojnacki 2018, Herkenhoff 2023):
+      Modern transport → 276 ° (WNW) — drives current ripples
+      Ancient paleowind → 94 ° (from west) — recorded in ventifacts (not ripples)
+
+    Profile:
+      Stoss face (upwind/east, 75 % of λ): gentle ~7 ° slope, sinusoidal rise
+      Lee face  (downwind/west, 25 % of λ): steep ~30 ° drop, near-linear
+
+    References
+    ----------
+    Chojnacki et al. 2018, PMC5859260 — λ = 3–4 m, migration 0.2 m/yr, az 276°
+    Bridges et al. 2017, PMC5815379  — h = 12–28 cm, lee 29–33°, grain 1–2 mm
+    """
+    ny, nx = elevation.shape
+    xs = np.linspace(-terrain_w / 2, terrain_w / 2, nx, dtype=np.float64)
+    ys = np.linspace(-terrain_d / 2, terrain_d / 2, ny, dtype=np.float64)
+    X, Y = np.meshgrid(xs, ys)
+
+    # Project grid points onto transport direction
+    az_rad   = math.radians(transport_azimuth)
+    td       = np.array([math.sin(az_rad), math.cos(az_rad)])
+    proj     = X * td[0] + Y * td[1]          # signed distance along transport
+
+    # Normalised phase in [0, 1)
+    phase = (proj / wavelength) % 1.0
+
+    # Asymmetric sawtooth profile: gentle stoss rise, steep lee drop
+    z_ripple = np.where(
+        phase < stoss_fraction,
+        # Stoss: smooth cosine rise (0 → peak)
+        height * 0.5 * (1.0 - np.cos(np.pi * phase / stoss_fraction)),
+        # Lee: linear drop (peak → 0)
+        height * (1.0 - (phase - stoss_fraction) / (1.0 - stoss_fraction)),
+    )
+
+    # Sparse megaripples — larger superimposed bedforms near random locations
+    # (Chojnacki 2020: wavelength 5–11 m, height up to 0.35 m near obstacles)
+    rng_mr = np.random.default_rng(17)
+    n_mega = max(1, int(terrain_w * terrain_d / 120))   # ~1 per 120 m²
+    for _ in range(n_mega):
+        cx   = rng_mr.uniform(-terrain_w * 0.4, terrain_w * 0.4)
+        cy   = rng_mr.uniform(-terrain_d * 0.4, terrain_d * 0.4)
+        wl_m = rng_mr.uniform(6.0, 10.0)
+        h_m  = rng_mr.uniform(0.20, 0.35)
+        radius = rng_mr.uniform(terrain_w * 0.06, terrain_w * 0.15)
+        dist   = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+        envelope = np.clip(1.0 - dist / radius, 0.0, 1.0) ** 2
+        ph_m   = ((proj - rng_mr.uniform(0, wl_m)) / wl_m) % 1.0
+        z_m    = np.where(
+            ph_m < stoss_fraction,
+            h_m * 0.5 * (1.0 - np.cos(np.pi * ph_m / stoss_fraction)),
+            h_m * (1.0 - (ph_m - stoss_fraction) / (1.0 - stoss_fraction)),
+        )
+        z_ripple += z_m * envelope
+
+    return (elevation + z_ripple).astype(np.float32)
+
+
+# ── Polygon crack network ─────────────────────────────────────────────────────
+
+def _compute_polygon_crack_mask(
+    ny: int, nx: int,
+    terrain_w: float,
+    terrain_d: float,
+    seed: int  = 77,
+    n_polygons: int = 64,   # ~1 per 25 m² in 40×40 m scene (diameter ~5 m avg)
+    crack_half_width: float = 0.30,   # metres (Voronoi-edge half-width threshold)
+) -> np.ndarray:
+    """
+    Compute a Voronoi-based polygon crack proximity mask for the terrain surface.
+
+    Jezero crater floor shows polygonal terrain from desiccation of the ancient
+    lake + thermal contraction.  Polygon diameter 3–10 m (mean ~5 m).
+    Crack fill: light-toned sulfate minerals → cracks BRIGHTER than surroundings.
+
+    Returns
+    -------
+    mask  float32 (ny, nx), values 0–1.  1 = at crack centre, 0 = polygon interior.
+
+    References
+    ----------
+    Crumpler et al. 2023 (10.1029/2022JE007444) — polygon geometry at Jezero
+    SHERLOC mapping paper (PMC12002120) — sulfate vein fill, crack width 0.1–4 mm
+    """
+    try:
+        from scipy.spatial import cKDTree as _KDTree
+    except ImportError:
+        # Fallback: no cracks if scipy missing (avoids hard crash)
+        return np.zeros((ny, nx), dtype=np.float32)
+
+    rng = np.random.default_rng(seed)
+    # Random Voronoi seed positions (metres, centred at origin)
+    sx = rng.uniform(-terrain_w * 0.5, terrain_w * 0.5, n_polygons)
+    sy = rng.uniform(-terrain_d * 0.5, terrain_d * 0.5, n_polygons)
+    seeds = np.stack([sx, sy], axis=1)
+
+    # Build grid of terrain vertex positions
+    xs = np.linspace(-terrain_w / 2, terrain_w / 2, nx, dtype=np.float32)
+    ys = np.linspace(-terrain_d / 2, terrain_d / 2, ny, dtype=np.float32)
+    X, Y = np.meshgrid(xs, ys)
+    pts  = np.stack([X.ravel(), Y.ravel()], axis=1)
+
+    # Distance to 2 nearest Voronoi seeds
+    tree   = _KDTree(seeds)
+    dists, _ = tree.query(pts, k=2)
+    d1, d2   = dists[:, 0], dists[:, 1]
+
+    # Crack proximity: high where d1 ≈ d2 (near Voronoi edge)
+    # (d2 - d1) = 0 on the edge; crack_half_width controls crack width
+    crack_proximity = np.maximum(0.0, 1.0 - (d2 - d1) / crack_half_width)
+    return crack_proximity.reshape(ny, nx).astype(np.float32)
+
+
+# ── Vertex-colour terrain material (PBR + primvar reader) ────────────────────
+
+def _build_vertex_color_material(
+    stage:    "Usd.Stage",
+    mat_path: str,
+    roughness: float = 0.92,
+) -> "UsdShade.Material":
+    """
+    PBR material that reads diffuse colour from primvars:displayColor.
+
+    Unlike a plain UsdPreviewSurface with a fixed diffuseColor, this material
+    passes per-vertex colours through to the RTX renderer via a PrimvarReader
+    shader — giving terrain slope/crack/dust colour variation under full PBR
+    lighting (shadows, ambient occlusion, etc.).
+
+    Works in Isaac Sim RTX-Realtime and RTX-Interactive modes.
+    """
+    mat    = UsdShade.Material.Define(stage, mat_path)
+    shader = UsdShade.Shader.Define(stage, mat_path + "/PBR")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+    shader.CreateInput("metallic",  Sdf.ValueTypeNames.Float).Set(0.0)
+    shader.CreateInput("useSpecularWorkflow", Sdf.ValueTypeNames.Int).Set(0)
+
+    reader = UsdShade.Shader.Define(stage, mat_path + "/ColorReader")
+    reader.CreateIdAttr("UsdPrimvarReader_float3")
+    reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+    reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
+
+    shader.CreateInput(
+        "diffuseColor", Sdf.ValueTypeNames.Color3f
+    ).ConnectToSource(reader.ConnectableAPI(), "result")
+
+    mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    return mat
+
+
+# ── Comprehensive terrain vertex colours ─────────────────────────────────────
+
+def _add_terrain_vertex_colors(
+    stage:        "Usd.Stage",
+    terrain_path: str,
+    elevation:    np.ndarray,
+    terrain_w:    float,
+    terrain_d:    float,
+    rock_xz:      Optional[List[Tuple[float, float]]] = None,
+) -> None:
+    """
+    Assign per-vertex colours to terrain capturing four physical processes:
+
+      1. Slope-driven lithology: steep → dark Basalt; flat → MarsOxide
+      2. Aeolian ripple grain sorting: crests → lighter coarse olivine grains;
+         troughs → darker fine pyroxene dust  (Bridges 2017, Vaughan 2023)
+      3. Topographic dust accumulation: low spots → bright PaleDust
+         (Vicente-Retortillo 2023: dust settles in lows)
+      4. Polygon crack network: crack edges → 20 % brighter (sulfate fill)
+         (Crumpler 2023; SHERLOC PMC12002120: light-toned veins)
+      5. Wind-shadow dust patches: triangular lighter zone downwind of boulders
+         (modern transport azimuth 276 °, Chojnacki 2018)
+
+    The primvars:displayColor attribute is read by _build_vertex_color_material
+    via a UsdPrimvarReader, giving full PBR-shaded colour variation.
+
+    References
+    ----------
+    Bridges et al. 2017  PMC5815379  — crest vs trough grain size
+    Vaughan et al. 2023  10.1029/2022JE007437 — regolith grain types
+    Vicente-Retortillo et al. 2023  10.1029/2022JE007672 — dust accumulation
+    Crumpler et al. 2023  10.1029/2022JE007444 — polygon morphology
+    """
+    prim = stage.GetPrimAtPath(terrain_path)
+    if not prim.IsValid():
+        return
+
+    ny, nx = elevation.shape
+    cell_w  = terrain_w / max(nx, 1)
+
+    xs = np.linspace(-terrain_w / 2, terrain_w / 2, nx, dtype=np.float32)
+    ys = np.linspace(-terrain_d / 2, terrain_d / 2, ny, dtype=np.float32)
+    X, Y = np.meshgrid(xs, ys)
+
+    # ── 1. Slope-driven base colour ───────────────────────────────────────────
+    slope  = _compute_terrain_slope(elevation, cell_w)
+    p90    = float(np.percentile(slope, 90))
+    slope_n = np.clip(slope / (p90 + 1e-9), 0.0, 1.0)
+
+    c_basalt = np.array([0.0977, 0.0643, 0.0417], dtype=np.float32)  # CRISM [H20]
+    c_oxide  = np.array([0.1615, 0.0996, 0.0642], dtype=np.float32)  # CRISM [C17]
+    c_dust   = np.array([0.3535, 0.2690, 0.1975], dtype=np.float32)  # CRISM [C17]
+    # Coarser olivine grains (ripple crests, around rock bases)
+    c_olivine = np.array([0.1200, 0.0850, 0.0550], dtype=np.float32) # Séítah olivine
+
+    sn   = slope_n[:, :, None].astype(np.float32)
+    base = c_basalt + sn * (c_oxide - c_basalt)   # (ny, nx, 3)
+
+    # ── 2. Aeolian ripple grain-sorting colour ────────────────────────────────
+    # Crests: coarser olivine grains (lighter/greyer); troughs: fine red dust
+    az_rad  = math.radians(276.0)    # modern transport direction (Chojnacki 2018)
+    td      = np.array([math.sin(az_rad), math.cos(az_rad)], dtype=np.float32)
+    proj    = X * td[0] + Y * td[1]
+    phase   = (proj / 3.5).astype(np.float32) % 1.0  # λ = 3.5 m
+    sf      = 0.75
+    # Crest proximity: near 1.0 at crest peak, near 0.0 in trough
+    crest_w = np.where(
+        phase < sf,
+        (0.5 * (1.0 - np.cos(np.pi * phase / sf))).astype(np.float32),
+        (1.0 - (phase - sf) / (1.0 - sf)).astype(np.float32),
+    )                                                  # (ny, nx)
+    crest_w = crest_w[:, :, None]
+    # Crests → blend toward olivine grain colour; troughs → more dust
+    ripple_color = base * (1.0 - 0.35 * crest_w) + c_olivine * (0.35 * crest_w)
+
+    # ── 3. Topographic dust accumulation ─────────────────────────────────────
+    elev_range = float(elevation.max() - elevation.min()) + 1e-9
+    elev_n     = ((elevation - float(elevation.min())) / elev_range).astype(np.float32)
+    dust_w     = np.clip(1.0 - elev_n * 3.5, 0.0, 1.0)[:, :, None]
+    colors     = ripple_color * (1.0 - dust_w * 0.6) + c_dust * (dust_w * 0.6)
+
+    # ── 4. Polygon crack brightness boost ─────────────────────────────────────
+    # Cracks appear ~20% brighter (light-toned sulfate fill, Crumpler 2023)
+    n_polys  = max(16, int(terrain_w * terrain_d / 25))   # 1 per ~25 m²
+    crack_m  = _compute_polygon_crack_mask(ny, nx, terrain_w, terrain_d,
+                                           n_polygons=n_polys)[:, :, None]
+    c_sulfate = np.array([0.45, 0.38, 0.30], dtype=np.float32)  # light-toned vein
+    colors    = colors * (1.0 - crack_m * 0.50) + c_sulfate * (crack_m * 0.50)
+
+    # ── 5. Wind-shadow dust patches behind rocks ──────────────────────────────
+    # Modern wind from ESE (96°), sand moves WNW (276°). Dust accumulates
+    # downwind (WNW) of each boulder — triangular brighter patch.
+    if rock_xz:
+        wind_up  = np.array([-td[0], -td[1]], dtype=np.float32)  # upwind direction
+        shadow_c = np.array([0.30, 0.22, 0.16], dtype=np.float32)  # dust-covered
+        shadow_layer = np.zeros((ny, nx), dtype=np.float32)
+
+        for (rx, ry) in rock_xz:
+            # Shadow extends downwind (in transport direction td)
+            shadow_len  = _RNG.uniform(1.5, 4.0)    # metres
+            shadow_half = _RNG.uniform(0.4, 1.2)    # half-width at base
+            # Vector from rock to each terrain point
+            dx_t = X - rx
+            dy_t = Y - ry
+            # Component along transport direction (positive = downwind)
+            along  = dx_t * td[0] + dy_t * td[1]
+            across = np.abs(-dx_t * td[1] + dy_t * td[0])
+            # Shadow mask: downwind triangle
+            in_shadow = (along > 0) & (along < shadow_len) & \
+                        (across < shadow_half * (1.0 - along / shadow_len))
+            strength  = np.where(in_shadow,
+                                  (1.0 - along / shadow_len) * 0.6, 0.0).astype(np.float32)
+            shadow_layer = np.maximum(shadow_layer, strength)
+
+        shadow_layer = shadow_layer[:, :, None]
+        colors = colors * (1.0 - shadow_layer) + shadow_c * shadow_layer
+
+    vertex_colors = np.clip(colors, 0.0, 1.0).reshape(-1, 3).astype(np.float32)
+
+    primvars_api = UsdGeom.PrimvarsAPI(prim)
+    pv = primvars_api.CreatePrimvar(
+        "displayColor",
+        Sdf.ValueTypeNames.Color3fArray,
+        "vertex",
+    )
+    pv.Set(Vt.Vec3fArray.FromNumpy(vertex_colors))
+
+
 # ── Geological unit assignment (Stack et al. 2020) ───────────────────────────
 
 def _make_seitah_patches(terrain_w: float, terrain_d: float,
@@ -1067,20 +1360,29 @@ def build_mars_scene(
         print(f"[hirise_terrain] Procedural DTM: "
               f"amplitude {terrain_amplitude}m, {terrain_nx}×{terrain_ny} verts")
 
+    # ── 2b. Aeolian ripple deformation ────────────────────────────────────────
+    # Baked into elevation BEFORE mesh build so geometry is physically correct.
+    # λ = 3.5 m, h = 0.15 m, transport 276 ° WNW (Chojnacki 2018, Bridges 2017)
+    elevation = _add_aeolian_ripples(elevation, terrain_width, terrain_depth)
+    print("[hirise_terrain] Aeolian ripples added (λ=3.5 m, h=0.15 m, 276° transport)")
+
     # ── 3. Terrain mesh ───────────────────────────────────────────────────────
     _build_terrain_mesh(stage, terrain_path, elevation, terrain_width, terrain_depth)
-
-    # ── 3b. Per-vertex slope-driven colour variation ──────────────────────────
-    _add_terrain_vertex_colors(
-        stage, terrain_path, elevation, terrain_width, terrain_depth
-    )
 
     # ── 4. Materials ──────────────────────────────────────────────────────────
     stage.DefinePrim(looks_root, "Scope")
     materials = _build_mars_materials(stage, looks_root)
 
-    # Bind primary surface material to terrain
-    _bind_material(stage, terrain_path, materials["MarsOxide"])
+    # Terrain uses vertex-colour PBR material so per-vertex colours show in RTX.
+    # The four-process colour model (slope + ripples + dust + polygon cracks)
+    # is written as primvars:displayColor, read by the PrimvarReader shader.
+    terrain_mat = _build_vertex_color_material(
+        stage, f"{looks_root}/TerrainVertexColor", roughness=0.92
+    )
+    _bind_material(stage, terrain_path, terrain_mat)
+
+    # Rock materials (fixed PBR colours per geological unit)
+    # materials dict is still used for rocks; terrain has its own material above.
 
     # ── 5. Rocks ──────────────────────────────────────────────────────────────
     stage.DefinePrim(rocks_root, "Scope")
@@ -1100,6 +1402,31 @@ def build_mars_scene(
           f"{counts.get('cobble',0)} cobbles, "
           f"{counts.get('pebble',0)} pebbles) "
           f"| ~{n_vent} ventifacts | Máaz+Séítah units | Voronoi fracture")
+
+    # ── 5b. Ground vertex colours (after rocks so wind shadows know positions) ─
+    # Extract (x, y) positions of large rocks for wind-shadow calculation.
+    boulder_cobble_xz: List[Tuple[float, float]] = []
+    for p in rock_paths:
+        if "/boulder_" in p or "/cobble_" in p:
+            prim = stage.GetPrimAtPath(p)
+            if prim.IsValid():
+                xf = UsdGeom.Xformable(prim)
+                ops = xf.GetOrderedXformOps()
+                for op in ops:
+                    if "translate" in op.GetName().lower():
+                        t = op.Get()
+                        boulder_cobble_xz.append((float(t[0]), float(t[1])))
+                        break
+
+    _add_terrain_vertex_colors(
+        stage, terrain_path, elevation,
+        terrain_width, terrain_depth,
+        rock_xz=boulder_cobble_xz,
+    )
+    n_poly = max(16, int(terrain_width * terrain_depth / 25))
+    print(f"[hirise_terrain] Ground texture: polygon cracks ({n_poly} polygons), "
+          f"ripple grain sorting, dust accumulation, "
+          f"{len(boulder_cobble_xz)} wind shadows")
 
     # ── 6. Lighting ───────────────────────────────────────────────────────────
     _build_martian_lighting(stage)
