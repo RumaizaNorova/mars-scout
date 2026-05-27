@@ -467,7 +467,27 @@ _ROCK_SIZE_CLASSES = [
 
 # ── Ventifact parameters (Herkenhoff 2023, Bridges 2014) ─────────────────────
 _VENTIFACT_PROB   = 0.35          # fraction of rocks with wind-erosion facets
-_WIND_AZIMUTH_DEG = 94.0          # paleowind from west (degrees east of north)
+_WIND_AZIMUTH_DEG = 94.0          # ancient paleowind from west (degrees east of north)
+
+# ── Dust mantling parameters (Chojnacki 2018, Bridges 2014) ──────────────────
+# Modern transport direction: 276 ° WNW (Chojnacki 2018, HiRISE repeat imaging)
+# Leeward faces (normal aligned with transport) → dust accumulates (brighter)
+# Windward faces (normal opposed to transport)  → abrasion-cleaned (darker)
+# Exponent 0.7: flattens cosine falloff so more of the leeward hemisphere
+# is dust-coated, consistent with ventifact keel observations (Bridges 2014)
+_MODERN_TRANSPORT_AZ  = 276.0     # degrees; sand moves WNW
+_MANTLING_EXPONENT    = 0.7       # dust accumulation falloff shape
+
+# CRISM-calibrated base colours per material (mirror of _build_mars_materials)
+# Kept here so _compute_rock_face_colors can run without a USD stage.
+_MATERIAL_COLORS: dict = {
+    "Basalt":    np.array([0.0977, 0.0643, 0.0417], dtype=np.float32),  # [H20]
+    "IronRich":  np.array([0.2125, 0.1330, 0.0734], dtype=np.float32),  # [H20]
+    "MarsOxide": np.array([0.1615, 0.0996, 0.0642], dtype=np.float32),  # [C17]
+    "Sandstone": np.array([0.2215, 0.1668, 0.1198], dtype=np.float32),  # [Q21]
+    "PaleDust":  np.array([0.3535, 0.2690, 0.1975], dtype=np.float32),  # [C17]
+}
+_DUST_MANTLE_COLOR = np.array([0.3535, 0.2690, 0.1975], dtype=np.float32)  # PaleDust
 
 
 # ── Icosphere base mesh ───────────────────────────────────────────────────────
@@ -975,6 +995,97 @@ def _sample_from_pdf(pdf: dict, rng: random.Random) -> str:
     return list(pdf.keys())[-1]
 
 
+# ── Rock dust mantling colours ────────────────────────────────────────────────
+
+def _compute_rock_face_colors(
+    verts:             np.ndarray,    # float32 (N, 3) local mesh space
+    faces:             np.ndarray,    # int32   (F, 3)
+    base_color:        np.ndarray,    # float32 (3,)   geological unit base colour
+    yaw_deg:           float,         # world-space yaw   applied to rock (°)
+    pitch_deg:         float,         # world-space pitch applied to rock (°)
+    roll_deg:          float,         # world-space roll  applied to rock (°)
+    transport_az:      float = _MODERN_TRANSPORT_AZ,
+    exponent:          float = _MANTLING_EXPONENT,
+    dust_color:        np.ndarray = _DUST_MANTLE_COLOR,
+) -> np.ndarray:
+    """
+    Compute per-vertex dust mantling colours for a rock mesh.
+
+    Physics
+    -------
+    Leeward faces (face-normal · transport_direction > 0):
+        dust accumulates because saltating grains decelerate in the wake
+        and fall out of suspension — brighter, reddish PaleDust colour.
+    Windward faces (face-normal · transport_direction < 0):
+        continual abrasion by saltating grains keeps surface clean —
+        dark, fresh geological base colour.
+
+    The cosine weight is raised to exponent 0.7 (not 1.0) because dust
+    accumulation is not perfectly cosine-distributed; it extends somewhat
+    around the equatorial belt of the rock (consistent with ventifact keel
+    observations, Bridges 2014 Aeolian Research).
+
+    Implementation
+    --------------
+    Face normals are computed in WORLD space (after applying yaw/pitch/roll)
+    so the mantling correctly aligns with the global wind direction regardless
+    of each rock's random orientation.
+
+    Per-vertex colour = average of mantling weights of adjacent faces.
+    This uses `vertex` interpolation rather than `faceVarying` or `uniform`
+    because Isaac Sim RTX's UsdPrimvarReader_float3 has the most robust
+    support for vertex-interpolated primvars across render modes.
+
+    References
+    ----------
+    Chojnacki et al. 2018 PMC5859260 — modern transport 276 ° WNW
+    Bridges et al. 2014 Aeolian Research — mantling pattern / ventifact keels
+    Herkenhoff et al. 2023 10.1029/2022JE007599 — ancient vs modern wind
+    """
+    # ── 1. Build world-space rotation matrix Rz(yaw) · Rx(pitch) · Ry(roll) ──
+    yr, pr, rr = math.radians(yaw_deg), math.radians(pitch_deg), math.radians(roll_deg)
+    cy, sy = math.cos(yr),  math.sin(yr)
+    cp, sp = math.cos(pr),  math.sin(pr)
+    cr, sr = math.cos(rr),  math.sin(rr)
+    Rz = np.array([[cy, -sy, 0.0],  [sy,  cy, 0.0],  [0.0, 0.0, 1.0]], dtype=np.float32)
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0,  cp,  -sp], [0.0,  sp,  cp]], dtype=np.float32)
+    Ry = np.array([[cr,  0.0,  sr], [0.0, 1.0, 0.0],  [-sr, 0.0,  cr]], dtype=np.float32)
+    R  = Rz @ Rx @ Ry                                # (3, 3)
+
+    world_verts = (verts @ R.T).astype(np.float32)   # (N, 3)
+
+    # ── 2. Face normals in world space ────────────────────────────────────────
+    v0 = world_verts[faces[:, 0]]
+    v1 = world_verts[faces[:, 1]]
+    v2 = world_verts[faces[:, 2]]
+    fn = np.cross(v1 - v0, v2 - v0).astype(np.float32)   # (F, 3)
+    fn_len = np.linalg.norm(fn, axis=1, keepdims=True)
+    fn /= (fn_len + 1e-9)
+
+    # ── 3. Transport direction in world space ─────────────────────────────────
+    az_rad  = math.radians(transport_az)
+    wind_3d = np.array([math.sin(az_rad), math.cos(az_rad), 0.0], dtype=np.float32)
+
+    # dot > 0 → face points leeward (downwind) → dust accumulates
+    dot_f     = fn @ wind_3d                              # (F,)
+    mantle_f  = np.clip(dot_f, 0.0, 1.0) ** exponent     # (F,)
+
+    # ── 4. Aggregate face mantling to per-vertex (average of adjacent faces) ──
+    # Uses np.add.at for O(F) numpy ops (no Python loop).
+    n_verts     = len(verts)
+    vert_mantle = np.zeros(n_verts, dtype=np.float32)
+    vert_count  = np.zeros(n_verts, dtype=np.float32)
+    for col in range(3):
+        np.add.at(vert_mantle, faces[:, col], mantle_f)
+        np.add.at(vert_count,  faces[:, col], 1.0)
+    vert_count   = np.maximum(vert_count, 1.0)
+    vert_mantle /= vert_count                             # (N,) in [0, 1]
+
+    # ── 5. Per-vertex colour = lerp(base, dust, mantling_weight) ─────────────
+    colors = base_color + vert_mantle[:, None] * (dust_color - base_color)
+    return np.clip(colors, 0.0, 1.0).astype(np.float32)  # (N, 3)
+
+
 # ── Main rock mesh builder ────────────────────────────────────────────────────
 
 def _build_rock_mesh(
@@ -1064,75 +1175,22 @@ def _build_rock_mesh(
     mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(normals))
     mesh.SetNormalsInterpolation("vertex")
 
-    return mesh
-
-
-# ── Terrain vertex colour variation ──────────────────────────────────────────
-
-def _add_terrain_vertex_colors(
-    stage:        "Usd.Stage",
-    terrain_path: str,
-    elevation:    np.ndarray,
-    terrain_w:    float,
-    terrain_d:    float,
-) -> None:
-    """
-    Assign slope-driven per-vertex display colours to terrain mesh.
-
-    Science:
-      Steep slopes → fresh rock exposure (dark Basalt, little dust)
-      Low-lying flats → aeolian dust accumulation (bright PaleDust)
-      Intermediate → iron-oxide regolith (MarsOxide)
-
-    Uses the same CRISM-calibrated linear-sRGB triplets as the PBR materials,
-    so vertex colours are consistent with material colours on rocks.
-    """
-    prim = stage.GetPrimAtPath(terrain_path)
-    if not prim.IsValid():
-        return
-
-    ny, nx_cells = elevation.shape
-    cell_w = terrain_w / max(nx_cells, 1)
-
-    slope   = _compute_terrain_slope(elevation, cell_w)
-    p90     = float(np.percentile(slope, 90))
-    slope_n = np.clip(slope / (p90 + 1e-9), 0.0, 1.0)
-
-    elev_range = float(elevation.max() - elevation.min())
-    elev_n     = (elevation - float(elevation.min())) / (elev_range + 1e-9)
-    dust_w     = np.clip(1.0 - elev_n * 3.0, 0.0, 1.0).astype(np.float32)
-
-    # CRISM-calibrated anchor colours (same as _build_mars_materials)
-    c_basalt = np.array([0.0977, 0.0643, 0.0417], dtype=np.float32)
-    c_oxide  = np.array([0.1615, 0.0996, 0.0642], dtype=np.float32)
-    c_dust   = np.array([0.3535, 0.2690, 0.1975], dtype=np.float32)
-
-    sn     = slope_n[:, :, None].astype(np.float32)
-    dw     = dust_w[:, :, None]
-    base   = c_basalt + sn * (c_oxide - c_basalt)
-    colors = base * (1.0 - dw) + c_dust * dw        # (ny, nx, 3)
-
-    vertex_colors = colors.reshape(-1, 3)
-
-    primvars_api = UsdGeom.PrimvarsAPI(prim)
-    pv = primvars_api.CreatePrimvar(
-        "displayColor",
-        Sdf.ValueTypeNames.Color3fArray,
-        "vertex",
-    )
-    pv.Set(Vt.Vec3fArray.FromNumpy(vertex_colors))
+    # Return geometry arrays alongside mesh so callers can compute
+    # per-vertex colours (e.g. dust mantling) without re-reading the stage.
+    return mesh, verts32, faces
 
 
 # ── Rock placement (CFA + geological clustering) ─────────────────────────────
 
 def _place_rocks(
-    stage:      "Usd.Stage",
-    rocks_root: str,
-    elevation:  np.ndarray,
-    terrain_w:  float,
-    terrain_d:  float,
-    materials:  dict,
-    rng:        random.Random,
+    stage:         "Usd.Stage",
+    rocks_root:    str,
+    elevation:     np.ndarray,
+    terrain_w:     float,
+    terrain_d:     float,
+    materials:     dict,
+    rng:           random.Random,
+    rock_material: Optional["UsdShade.Material"] = None,
 ) -> List[str]:
     """
     Place rocks with full geological realism:
@@ -1142,6 +1200,8 @@ def _place_rocks(
       4. Ventifact probability 35 % — Bridges 2014, Herkenhoff 2023
       5. 40 % protrusion (baked into mesh) — Golombek 2008
       6. Random tilt ± 8° — rocks settle on uneven ground
+      7. Per-vertex dust mantling colours — Chojnacki 2018, Bridges 2014
+         Leeward faces (WNW) → PaleDust; windward (ESE) → clean base colour
     """
     ny, nx_cells = elevation.shape
     cell_w = terrain_w / max(nx_cells, 1)
@@ -1204,22 +1264,51 @@ def _place_rocks(
             unit_data    = _UNIT_MAAZ if unit == "maaz" else _UNIT_SEITAH
             is_ventifact = rng.random() < _VENTIFACT_PROB
 
-            # Build mesh
+            # Build mesh — returns geometry arrays for colour computation
             prim_path = f"{rocks_root}/{cls_name}_{idx:03d}"
-            _build_rock_mesh(stage, prim_path, diam_m, unit, is_ventifact, rng)
+            _, rock_verts, rock_faces = _build_rock_mesh(
+                stage, prim_path, diam_m, unit, is_ventifact, rng
+            )
 
-            # Transform: translate → yaw → pitch/roll (rocks tilt on rough terrain)
+            # ── Rotations: fix values before applying so we can pass them
+            #    to _compute_rock_face_colors (world-space mantling needs
+            #    to know the rock's orientation).
+            yaw   = rng.uniform(0.0, 360.0)
+            pitch = rng.uniform(-8.0,   8.0)
+            roll  = rng.uniform(-8.0,   8.0)
+
+            # Transform: translate → yaw → pitch/roll
             xf = UsdGeom.Xformable(stage.GetPrimAtPath(prim_path))
             xf.AddTranslateOp().Set(Gf.Vec3d(x, y, z_terrain))
-            xf.AddRotateZOp().Set(rng.uniform(0.0, 360.0))
-            xf.AddRotateXOp().Set(rng.uniform(-8.0,   8.0))
-            xf.AddRotateYOp().Set(rng.uniform(-8.0,   8.0))
+            xf.AddRotateZOp().Set(yaw)
+            xf.AddRotateXOp().Set(pitch)
+            xf.AddRotateYOp().Set(roll)
 
-            # Material weighted by geological unit
+            # ── Dust mantling colours (Layer 4) ──────────────────────────────
+            # Select geological base colour first (same weighted draw as before)
             mat_key = rng.choices(
                 unit_data["materials"], weights=unit_data["mat_weights"], k=1
             )[0]
-            if mat_key in materials:
+            base_c = _MATERIAL_COLORS.get(mat_key, _MATERIAL_COLORS["Basalt"])
+
+            vc = _compute_rock_face_colors(
+                rock_verts, rock_faces, base_c,
+                yaw_deg=yaw, pitch_deg=pitch, roll_deg=roll,
+            )
+
+            primvars_api = UsdGeom.PrimvarsAPI(stage.GetPrimAtPath(prim_path))
+            pv = primvars_api.CreatePrimvar(
+                "displayColor",
+                Sdf.ValueTypeNames.Color3fArray,
+                "vertex",          # vertex interpolation: best RTX support
+            )
+            pv.Set(Vt.Vec3fArray.FromNumpy(vc))
+
+            # ── Material: vertex-colour PBR reader (shared across all rocks)
+            #    Falls back to plain unit material if rock_material not provided.
+            if rock_material is not None:
+                _bind_material(stage, prim_path, rock_material)
+            elif mat_key in materials:
                 _bind_material(stage, prim_path, materials[mat_key])
 
             rock_paths.append(prim_path)
@@ -1229,58 +1318,274 @@ def _place_rocks(
 
 
 # =============================================================================
-# Part 5 — Martian lighting
+# Part 5 — Pebble scatter (USD PointInstancer, Layer 5)
+# =============================================================================
+#
+# Scientific basis:
+#   Vaughan et al. 2023, JGR Planets (10.1029/2022JE007437)
+#     — regolith grain-size mapping, pebble aprons around rocks, λ ≈ 0.4 m
+#   Golombek et al. 2008 JGR 113 E00A11
+#     — CFA size-frequency, 1–5 cm clasts abundant at crater floors
+#   Bridges et al. 2017 PMC5815379
+#     — coarse grains (1–2 mm) concentrated at ripple crests and rock bases
+#
+# Why PointInstancer:
+#   2 500 individual Mesh prims would saturate USD traversal.
+#   PointInstancer gives N instances from M prototype meshes in O(M) prim cost.
+#   Each instance varies: position, scale (size jitter ± 30 %), prototype choice.
+
+def _scatter_pebbles(
+    stage:          "Usd.Stage",
+    instancer_path: str,
+    elevation:      np.ndarray,
+    terrain_w:      float,
+    terrain_d:      float,
+    rock_xz:        List[Tuple[float, float]],
+    rng:            random.Random,
+    n_total:        int = 2500,
+    pebble_mat:     Optional["UsdShade.Material"] = None,
+) -> str:
+    """
+    Scatter micro-pebble clasts (1–5 cm diameter) using USD PointInstancer.
+
+    Placement strategy
+    ------------------
+    65 % clustered near boulders / cobbles:
+      Radial distance drawn from Exponential(λ=0.4 m) — Vaughan 2023 finds
+      pebble density falls off with this characteristic length from rock edges.
+
+    35 % uniform random (background regolith coverage):
+      CFA power-law requires a baseline pebble density across the whole floor.
+
+    Prototypes
+    ----------
+    Three size classes (tiny / small / medium) at 60:30:10 frequency ratio,
+    matching Golombek 2008 CFA sub-centimetre distribution.
+      tiny:   d = 1.2 cm
+      small:  d = 2.5 cm
+      medium: d = 4.5 cm
+
+    Each prototype is an icosphere (subs=0) with Voronoi fracture + grain noise
+    so they look like angular clasts, not perfect spheres.  Oblate (h ≈ 0.45 d)
+    so they look naturally settled on the surface.
+
+    Returns
+    -------
+    str  USD prim path of the PointInstancer.
+
+    References
+    ----------
+    Vaughan et al. 2023  10.1029/2022JE007437  — pebble apron λ
+    Golombek et al. 2008 JGR 113 E00A11        — CFA sub-pebble distribution
+    Bridges et al. 2017  PMC5815379            — coarse grains at rock bases
+    """
+    rng_np = np.random.default_rng(rng.randint(0, 2 ** 32))
+    ny, nx = elevation.shape
+
+    instancer = UsdGeom.PointInstancer.Define(stage, instancer_path)
+    stage.DefinePrim(f"{instancer_path}/Prototypes", "Scope")
+
+    # ── 1. Build prototype meshes ─────────────────────────────────────────────
+    # diameter in metres, frequency weight
+    _PROTO_SPECS = [
+        (0.012, 0.60),   # tiny   — 60 % of all pebbles
+        (0.025, 0.30),   # small  — 30 %
+        (0.045, 0.10),   # medium — 10 %
+    ]
+    proto_paths = []
+    proto_weights = [w for _, w in _PROTO_SPECS]
+
+    for i, (diam, _) in enumerate(_PROTO_SPECS):
+        path = f"{instancer_path}/Prototypes/pebble_{i}"
+        v, f = _make_icosphere(subdivisions=0)   # 12 verts / 20 faces — cheap
+
+        # Angular fracture + grain texture
+        n_cuts  = int(rng_np.integers(4, 8))
+        v       = _voronoi_fracture(v, n_cuts, rng_np)
+        v       = _apply_grain_noise(v, 0.07, rng_np)
+
+        # Oblate scaling: width ± 15 %, height ≈ 0.45 × diameter
+        r = diam / 2.0
+        v[:, 0] *= r * float(rng_np.uniform(0.85, 1.15))
+        v[:, 1] *= r * float(rng_np.uniform(0.85, 1.15))
+        v[:, 2] *= r * 0.45
+
+        # Sit pebble on surface — expose 40 % (Golombek 2008)
+        z_lo      = float(v[:, 2].min())
+        z_hi      = float(v[:, 2].max())
+        v[:, 2]  -= z_lo + 0.55 * (z_hi - z_lo)
+
+        v32 = v.astype(np.float32)
+        fi  = f.ravel().astype(np.int32)
+        fc  = np.full(len(f), 3, dtype=np.int32)
+
+        mesh = UsdGeom.Mesh.Define(stage, path)
+        mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(v32))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(fi))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(fc))
+        mesh.CreateSubdivisionSchemeAttr("none")
+        mesh.CreateDoubleSidedAttr(False)
+
+        # Flat basalt-oxide colour — pebbles too small for mantling
+        # Slightly lighter than basalt (Vaughan 2023: pebbles often dust-coated)
+        pebble_col = np.array([[0.135, 0.092, 0.060]], dtype=np.float32).repeat(len(v32), axis=0)
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            "displayColor",
+            Sdf.ValueTypeNames.Color3fArray,
+            "vertex",
+        ).Set(Vt.Vec3fArray.FromNumpy(pebble_col))
+
+        if pebble_mat is not None:
+            _bind_material(stage, path, pebble_mat)
+
+        proto_paths.append(path)
+
+    instancer.CreatePrototypesRel().SetTargets(
+        [Sdf.Path(p) for p in proto_paths]
+    )
+
+    # ── 2. Generate positions ─────────────────────────────────────────────────
+    positions:     list = []
+    proto_indices: list = []
+    scales_list:   list = []
+
+    n_clustered = int(n_total * 0.65)
+    n_uniform   = n_total - n_clustered
+
+    # Helper: sample a prototype index using frequency weights
+    def _pick_proto() -> int:
+        r = rng.random()
+        cum = 0.0
+        for k, w in enumerate(proto_weights):
+            cum += w
+            if r <= cum:
+                return k
+        return len(proto_weights) - 1
+
+    def _terrain_z(x: float, y: float) -> float:
+        col = int((x + terrain_w / 2) / terrain_w * (nx - 1))
+        row = int((y + terrain_d / 2) / terrain_d * (ny - 1))
+        return float(elevation[max(0, min(ny - 1, row)), max(0, min(nx - 1, col))])
+
+    # Background uniform pebbles
+    for _ in range(n_uniform):
+        x = rng.uniform(-terrain_w * 0.47, terrain_w * 0.47)
+        y = rng.uniform(-terrain_d * 0.47, terrain_d * 0.47)
+        positions.append((x, y, _terrain_z(x, y)))
+        proto_indices.append(_pick_proto())
+        sc = float(rng_np.uniform(0.70, 1.30))
+        scales_list.append((sc, sc, sc))
+
+    # Clustered pebbles near boulders / cobbles
+    if rock_xz:
+        n_placed = 0
+        rock_list = list(rock_xz)
+        while n_placed < n_clustered:
+            rx, ry = rock_list[n_placed % len(rock_list)]
+            angle  = rng.uniform(0.0, 2.0 * math.pi)
+            # Exponential radial distribution λ = 0.4 m (Vaughan 2023)
+            r_dist = float(rng_np.exponential(0.40))
+            r_dist = min(r_dist, 3.0)   # hard cap at 3 m
+            x = rx + r_dist * math.cos(angle)
+            y = ry + r_dist * math.sin(angle)
+            x = max(-terrain_w * 0.47, min(terrain_w * 0.47, x))
+            y = max(-terrain_d * 0.47, min(terrain_d * 0.47, y))
+            positions.append((x, y, _terrain_z(x, y)))
+            proto_indices.append(_pick_proto())
+            sc = float(rng_np.uniform(0.70, 1.30))
+            scales_list.append((sc, sc, sc))
+            n_placed += 1
+    else:
+        # Fallback: additional uniform pebbles when no rocks exist
+        for _ in range(n_clustered):
+            x = rng.uniform(-terrain_w * 0.47, terrain_w * 0.47)
+            y = rng.uniform(-terrain_d * 0.47, terrain_d * 0.47)
+            positions.append((x, y, _terrain_z(x, y)))
+            proto_indices.append(_pick_proto())
+            sc = float(rng_np.uniform(0.70, 1.30))
+            scales_list.append((sc, sc, sc))
+
+    # ── 3. Write PointInstancer attributes ────────────────────────────────────
+    pos_arr  = np.array(positions,   dtype=np.float32)
+    sc_arr   = np.array(scales_list, dtype=np.float32)
+
+    instancer.CreatePositionsAttr().Set(Vt.Vec3fArray.FromNumpy(pos_arr))
+    instancer.CreateProtoIndicesAttr().Set(Vt.IntArray(proto_indices))
+    instancer.CreateScalesAttr().Set(Vt.Vec3fArray.FromNumpy(sc_arr))
+
+    return instancer_path
+
+
+# =============================================================================
+# Part 6 — Martian lighting
 # =============================================================================
 
 def _build_martian_lighting(stage: "Usd.Stage") -> None:
     """
     Physically accurate Martian lighting for Jezero Crater.
 
-    Sun parameters:
-      - Low-angle morning light (28° elevation, 15° azimuth from east)
-      - 3 400 K colour temperature (amber, dust-scattered)
-      - Intensity 3 500 lx (Mars midday ≈ 590 W/m², vs Earth 1000 W/m²)
+    Sun parameters (Jezero morning, Bell et al. 2021 Mastcam-Z calibration):
+      - 28° elevation above horizon, 15° azimuth from south
+      - Near-white tint (Mastcam-Z shows sun as ~neutral, very slight warm cast)
+      - Intensity 4 500 internal units (empirically calibrated for correct exposure)
+      - Angular diameter 0.35° (Mars: smaller than Earth's 0.53° due to distance)
 
-    Sky:
-      - Hazy pink-peach dome (Rayleigh scatter + iron-dust aerosols)
-      - Intensity 600 lx (diffuse skylight)
+    Sky dome — two modes (auto-selected):
+      A. If scripts/generate_mars_sky.py has been run:
+         Loads data/mars_sky.png as equirectangular texture.
+         Physically accurate HG forward-scatter gradient, horizon brightening,
+         sun halo (g=0.68, Madeleine 2012).  Intensity 200 units (texture provides
+         the colour; white tint lets texture dominate).
+
+      B. Fallback flat colour (if texture not yet generated):
+         Dusty pinkish-tan (0.58, 0.42, 0.32) — Perseverance sky calibration.
+         Intensity 250 units.
+
+    References
+    ----------
+    Bell et al. 2021, Space Sci Rev 217, 24  — Mastcam-Z sun/sky calibration
+    Madeleine et al. 2012, Icarus 220, 798   — aerosol g=0.66–0.73
+    Vicente-Retortillo et al. 2023           — MEDA sky radiance measurements
     """
-    # Sun (DistantLight)
+    # ── Sun (DistantLight) ────────────────────────────────────────────────────
     sun_path = "/World/SunLight"
     if not stage.GetPrimAtPath(sun_path).IsValid():
         sun = UsdLux.DistantLight.Define(stage, sun_path)
     else:
         sun = UsdLux.DistantLight(stage.GetPrimAtPath(sun_path))
 
-    # Mars solar irradiance: ~590 W/m² (vs Earth 1000 W/m²) → ~59% of Earth noon.
-    # Isaac Sim DistantLight intensity ~= lux. Earth clear noon ~100000 lux.
-    # Mars equivalent: ~59000 lux. We use 55000 to account for dust opacity tau~0.5.
-    # Sun COLOR: Perseverance Mastcam-Z calibration images show the Martian sun
-    # appears near-white with very slight warm tint (dust absorbs blue slightly).
-    # NOT the deep amber we had — that was causing the yellow-wash on terrain.
-    # Reference: Bell et al. 2021, Space Science Reviews (Mastcam-Z instrument paper)
-    # Isaac Sim DistantLight intensity is NOT physical lux — internal renderer units.
-    # Empirically calibrated: 4500 gives correct exposure without washout.
-    # Color: near-neutral (Perseverance Mastcam-Z shows sun as white, not amber).
     sun.CreateIntensityAttr(4500.0)
     sun.CreateColorAttr(Gf.Vec3f(1.0, 0.93, 0.88))   # near-white, very slight warm tint
-    sun.CreateAngleAttr(0.35)                          # Mars: sun subtends ~0.35° (smaller than Earth's 0.53°)
+    sun.CreateAngleAttr(0.35)                          # 0.35° angular diameter at Mars distance
 
-    # Orient sun: 28° above horizon from south-west (Jezero morning local time)
+    # Orient sun: 28° above horizon, 15° azimuth from south (Jezero ~10:00 local)
     sun_xf = UsdGeom.Xformable(sun.GetPrim())
     sun_xf.AddRotateXYZOp().Set(Gf.Vec3f(-(90.0 - 28.0), 0.0, 45.0))
 
-    # Sky dome — Martian sky is dusty pinkish-tan (iron dust aerosols scatter red).
-    # Perseverance sky images: RGB approx (0.58, 0.42, 0.32) normalised.
-    # Intensity: diffuse skylight ~7% of direct solar = ~3900 lux.
+    # ── Sky dome (DomeLight) ──────────────────────────────────────────────────
     sky_path = "/World/SkyDome"
     if not stage.GetPrimAtPath(sky_path).IsValid():
         sky = UsdLux.DomeLight.Define(stage, sky_path)
     else:
         sky = UsdLux.DomeLight(stage.GetPrimAtPath(sky_path))
 
-    sky.CreateIntensityAttr(250.0)
-    sky.CreateColorAttr(Gf.Vec3f(0.58, 0.42, 0.32))  # dusty pinkish-tan (Perseverance sky)
+    # Try to load the Henyey-Greenstein sky texture (generate_mars_sky.py output)
+    _sky_texture = os.path.expanduser("~/mars-rover-agent/data/mars_sky.png")
+    if os.path.exists(_sky_texture):
+        # Texture provides all colour information — keep DomeLight colour neutral.
+        # Rotate dome so azimuth 0° in texture aligns with scene north (+Y).
+        sky.CreateTextureFileAttr().Set(Sdf.AssetPath(_sky_texture))
+        sky.CreateColorAttr(Gf.Vec3f(1.0, 1.0, 1.0))
+        sky.CreateIntensityAttr(200.0)
+        sky_xf = UsdGeom.Xformable(sky.GetPrim())
+        sky_xf.AddRotateYOp().Set(0.0)   # texture azimuth 0 = north already
+        print("[hirise_terrain] Sky dome: Henyey-Greenstein texture loaded.")
+    else:
+        # Flat colour fallback (Perseverance sky calibration, Bell 2021)
+        sky.CreateIntensityAttr(250.0)
+        sky.CreateColorAttr(Gf.Vec3f(0.58, 0.42, 0.32))
+        print("[hirise_terrain] Sky dome: flat colour fallback "
+              "(run scripts/generate_mars_sky.py for gradient sky).")
 
 
 # =============================================================================
@@ -1381,8 +1686,14 @@ def build_mars_scene(
     )
     _bind_material(stage, terrain_path, terrain_mat)
 
-    # Rock materials (fixed PBR colours per geological unit)
-    # materials dict is still used for rocks; terrain has its own material above.
+    # Shared vertex-colour PBR material for ALL rocks.
+    # Each rock's primvars:displayColor carries its own per-vertex mantling
+    # colours; the material just reads them.  One shared material is correct
+    # USD practice — the PrimvarReader reads from the prim being shaded.
+    # Roughness 0.80: rocks are slightly less rough than loose regolith.
+    rock_vc_mat = _build_vertex_color_material(
+        stage, f"{looks_root}/RockVertexColor", roughness=0.80
+    )
 
     # ── 5. Rocks ──────────────────────────────────────────────────────────────
     stage.DefinePrim(rocks_root, "Scope")
@@ -1390,6 +1701,7 @@ def build_mars_scene(
         stage, rocks_root, elevation,
         terrain_width, terrain_depth,
         materials, rng,
+        rock_material=rock_vc_mat,
     )
     counts = {cls: 0 for cls, *_ in _ROCK_SIZE_CLASSES}
     for p in rock_paths:
@@ -1428,14 +1740,32 @@ def build_mars_scene(
           f"ripple grain sorting, dust accumulation, "
           f"{len(boulder_cobble_xz)} wind shadows")
 
+    # ── 5c. Pebble scatter (Layer 5) ──────────────────────────────────────────
+    # Micro-pebble clasts (1–5 cm) via USD PointInstancer.
+    # Vaughan 2023: exponential density falloff from rock bases λ=0.4 m.
+    # Use rock_vc_mat for prototype shading (vertex-colour PBR reader).
+    pebble_instancer_path = f"{rocks_root}/PebbleInstancer"
+    _scatter_pebbles(
+        stage, pebble_instancer_path,
+        elevation, terrain_width, terrain_depth,
+        rock_xz=boulder_cobble_xz,
+        rng=rng,
+        n_total=2500,
+        pebble_mat=rock_vc_mat,
+    )
+    print(f"[hirise_terrain] Scattered 2 500 micro-pebbles (1–5 cm) "
+          f"via PointInstancer | 65 % clustered near rocks (λ=0.4 m) | "
+          f"35 % uniform background")
+
     # ── 6. Lighting ───────────────────────────────────────────────────────────
     _build_martian_lighting(stage)
     print("[hirise_terrain] Martian lighting applied (Jezero morning sun)")
 
     return {
-        "terrain_path":   terrain_path,
-        "rock_paths":     rock_paths,
-        "dtm_source":     meta["dtm_source"],
-        "elevation_min":  meta["elevation_min"],
-        "elevation_max":  meta["elevation_max"],
+        "terrain_path":    terrain_path,
+        "rock_paths":      rock_paths,
+        "pebble_instancer": pebble_instancer_path,
+        "dtm_source":      meta["dtm_source"],
+        "elevation_min":   meta["elevation_min"],
+        "elevation_max":   meta["elevation_max"],
     }

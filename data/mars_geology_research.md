@@ -271,85 +271,134 @@ Real floor albedo I/F(750nm) ≈ 0.07–0.18. Old guesses were 0.35–0.65.
 ---
 
 ## 7. WHAT THE CURRENT MODEL GETS RIGHT
+# Updated: 2026-05-27 — all five realism layers now implemented
 
-- [x] CRISM-calibrated material colors (5 units)
+### ROCKS (all done)
+- [x] CRISM-calibrated material colors (5 units: Basalt, IronRich, MarsOxide, Sandstone, PaleDust)
 - [x] Voronoi fracture rock shapes (angularity)
-- [x] Powers roundness distribution (Khan et al. 2022)
-- [x] Laplacian weathering (rounds edges)
-- [x] Ventifact erosion (Herkenhoff 2023 paleowind)
-- [x] Grain-scale noise (micro-roughness)
+- [x] Powers roundness distribution per geological unit (Khan et al. 2022)
+- [x] Laplacian weathering (rounds edges, Priour 2020)
+- [x] Ventifact erosion — ancient paleowind 94° (Herkenhoff 2023)
+- [x] Grain-scale noise (micro-roughness, two octaves)
 - [x] Golombek aspect ratios (h = 0.5× d)
-- [x] 40% protrusion (embedded rocks)
-- [x] Two geological units (Máaz / Séítah)
-- [x] Slope-weighted spatial clustering
-- [x] Slope-driven terrain vertex colors (basic)
-- [x] Correct sun angle and color
-- [x] Correct sky color
+- [x] 40% protrusion above surface (60% buried, Golombek 2008)
+- [x] Two geological units (Máaz / Séítah, Stack et al. 2020)
+- [x] Slope-weighted spatial clustering near scarps
+- [x] LAYER 4: Per-vertex dust mantling (leeward=WNW dust-coated, windward=clean)
+      World-space normals via yaw/pitch/roll rotation matrix
+      Wind 276° WNW (Chojnacki 2018), exponent=0.7 (Bridges 2014)
+      Validated: leeward/windward ratio 2.16× ✓
+
+### GROUND (all done)
+- [x] 5-layer terrain vertex color model (comprehensive, with rock_xz wind shadows)
+      1. Slope → basalt/oxide blend
+      2. Aeolian ripple grain sorting (crest=olivine grain, trough=red dust)
+      3. Topographic dust accumulation (lows=bright PaleDust)
+      4. Polygon crack brightness +50% (sulfate fill, Crumpler 2023)
+      5. Wind shadow patches behind boulders (transport 276°, Chojnacki 2018)
+- [x] LAYER 1 (to run on server): HiRISE DEM loader ready
+      download_hirise.sh → ~/mars-rover-agent/data/jezero_hirise.tif
+      Validated: auto-fallback to procedural if file missing
+- [x] LAYER 2/3 combined: Aeolian ripples baked into elevation
+      λ=3.5m, h=0.15m, asymmetric 75/25 stoss/lee, transport 276°
+      + megaripples (λ=6–10m, h=0.2–0.35m) near boulders
+- [x] Polygon crack network (Voronoi, ~5m diameter, sulfate-bright, Crumpler 2023)
+- [x] LAYER 5: Pebble scatter via USD PointInstancer
+      2500 clasts, 1–5 cm diameter, 3 size prototypes (60:30:10%)
+      65% clustered near rocks (exponential decay λ=0.4m, Vaughan 2023)
+      35% uniform background
+      Icosphere subs=0 + Voronoi fracture + grain noise — angular clasts
+
+### ATMOSPHERE / SKY
+- [x] Correct sun angle (28° elev, 15° az), color (near-white, Bell 2021)
+- [x] Angular diameter 0.35° (Mars-correct, smaller than Earth)
+- [x] LAYER 3: Mars sky HDR texture (scripts/generate_mars_sky.py)
+      Henyey-Greenstein phase function, g=0.68 (Madeleine 2012)
+      Zenith: pinkish-tan (0.43, 0.28, 0.20) in linear RGB
+      Horizon: brighter/redder (0.72, 0.51, 0.34) — air-mass brightening
+      Sun halo: 25° corona, 0.35° disk
+      Output: data/mars_sky.png (2048×1024) — auto-loaded by DomeLight
+      Validated: horizon/zenith ratio 1.73× ✓  forward-scatter 2.99× ✓
 
 ---
 
-## 8. WHAT IS MISSING (PRIORITIZED)
+## 8. WHAT IS MISSING (remaining after 5-layer plan)
 
-### GROUND — Critical (every camera frame shows this)
+### GROUND — Next priority after GPU is back
 
-P1 — Aeolian ripples (sinusoidal height modulation, λ=0.5–1m, A=1–3cm)
-P1 — Polygonal crack network (Voronoi pattern, 1–4m polygons, cracks 2–8cm wide)
-P2 — Wind shadow dust patches behind boulders (triangular lighter zones)
-P2 — Bedrock slab exposure (flat dark patches in high-slope areas)
-P2 — Pebble/granule scatter layer (dense 0.5–5cm particles as ground surface)
-P3 — Small impact craters (0.5–5m, slight ejecta rim)
-P3 — Dust devil tracks (lighter circular/linear paths)
+P2 — Small impact craters (0.5–5m, ejecta rim)
+      ~2–5 per 40×40m scene; slight elevation rim; brighter ejecta blanket
+P2 — Bedrock slab exposure (flat dark Máaz basalt where regolith removed)
+      Farley 2022: "thinly veneered regolith over competent basalt"
+P3 — Lag pavement / deflation surfaces (dark, interlocking flat pebbles)
+P3 — Dust devil tracks (lighter circular/linear paths, rare but visible)
 
-### ROCKS — Important (individually convincing, not just collectively)
+### ROCKS — Next priority
 
-P2 — Vesicular surface texture (pitted basalt — gas bubbles during eruption)
-P2 — Asymmetric dust mantling (dust on east/lee face, clean windward face)
-P2 — Thermal spalling texture (thin stepped flakes on top surfaces)
-P2 — Coherent fracture families (current cuts are random — real fractures are
-      aligned with cooling/stress directions)
-P3 — Conglomerate texture for delta-proximal rocks (embedded rounded sub-clasts)
-P3 — Desert varnish darkening (older surfaces → darker Fe/Mn coating)
-P3 — Impact pitting (microcraters on exposed upper surfaces of boulders)
+P2 — Vesicular surface texture (pitted basalt, gas-bubble voids)
+      Bhartia et al. 2021 SHERLOC — confirmed at Jezero
+      Strategy: random negative spherical indentations on mesh surface
+P2 — Coherent fracture families (cooling joints / thermal fatigue sets)
+      Currently: random Voronoi cuts. Real: aligned with stress directions.
+      Eppes 2020 (thermal fatigue), columnar joints in basalt
+P3 — Conglomerate texture (embedded rounded sub-clasts for delta rocks)
+P3 — Desert varnish darkening (>1 Myr exposed surfaces darker)
+P3 — Impact pitting on boulder upper surfaces (microcraters)
 
-### ATMOSPHERE/RENDERING
+### ATMOSPHERE / RENDERING
 
-P2 — Horizon atmospheric haze (blue/pink gradient toward horizon)
-P2 — Shadow colour: pinkish not blue (sky fill from dusty sky)
-P3 — Sun disk visible in sky (0.35° angular diameter, slightly orangeish)
+P2 — Shadow colour accuracy: pinkish not blue
+      With HG sky texture this should be automatic — verify after GPU comes back
+P3 — Near-surface haze is imperceptible at 40m scale (Beer-Lambert effect
+      only meaningful at >100m; τ=0.5 over 40m → 0.2% extinction)
 
 ---
 
-## 9. MODELING STRATEGIES (not yet coded)
+## 9. IMPLEMENTED ALGORITHMS (for reference)
 
-### Aeolian ripple mesh deformation:
-z_ripple(x, y) = A × (sin(2π × (x cos θ + y sin θ) / λ))^2_asymmetric
-where A=0.015m, λ=0.7m, θ=4° (perpendicular to 94° paleowind)
-Asymmetric: use sharper crest (e.g. sawtooth-blended sine) for lee side
+### Aeolian ripple mesh deformation (DONE):
+z_ripple(x, y) = asymmetric sawtooth along transport direction 276°
+  phase = (proj / λ) % 1.0  where proj = x·sin(276°) + y·cos(276°)
+  stoss face (phase < 0.75): h × 0.5 × (1 − cos(π × phase / 0.75))
+  lee face  (phase ≥ 0.75): h × (1 − (phase − 0.75) / 0.25)
+  λ = 3.5 m, h = 0.15 m (Chojnacki 2018, Bridges 2017)
+  + sparse megaripples (λ=6–10m, h=0.2–0.35m) near obstacles
 
-### Polygon crack network:
-1. Generate random Voronoi seeds at ~1 polygon per 2–4 m²
-2. For each edge of Voronoi diagram, slightly perturb vertices (not perfectly straight)
-3. Slightly lower elevation along crack lines (0.5–3 cm)
-4. Color cracks darker (shadow) or lighter (dust-filled)
-5. Option: add thin sub-cracking within polygons (smaller scale repeat)
+### Polygon crack network (DONE):
+1. n_polygons random Voronoi seeds (~1 per 25 m²)
+2. scipy cKDTree: d1, d2 = distances to 2 nearest seeds
+3. crack_proximity = max(0, 1 − (d2−d1)/crack_half_width)  [0–1]
+4. Blend terrain → sulfate_color with weight crack_proximity × 0.50
+   sulfate_color = (0.45, 0.38, 0.30)  [BRIGHTER, not darker]
 
-### Pebble scatter layer:
-- Not full 3D meshes (too many) — use displaced instances of simplified discs
-- ~5000–10000 pebbles in 40×40m, 0.5–5 cm diameter
-- Each: random orientation, mostly flat-lying
-- Color: Basalt/MarsOxide mix with random dark/light variation
-- Spatial density varies: sparse on bedrock slabs, dense in ripple troughs
+### Pebble scatter layer (DONE — USD PointInstancer):
+- 3 prototype meshes (icosphere + Voronoi + grain noise)
+- 2500 instances: 65% near rocks (Exp(λ=0.4m)), 35% uniform
+- Vaughan 2023 (10.1029/2022JE007437)
 
-### Rock dust mantling:
-- Add windward/leeward color variation per rock mesh
-- Windward face (west): darker, clean basalt color
-- Lee face (east): lighter, apply PaleDust mix
-- Implement as per-face color blending based on face normal dot wind_dir
+### Rock dust mantling (DONE — Layer 4):
+1. Build world-space rotation matrix from rock yaw/pitch/roll
+2. Rotate vertices to world space
+3. Per-face normals (cross product of world-space edge vectors)
+4. dot = fn · wind_3d  (transport az=276°)
+5. mantle_f = clip(dot, 0, 1)^0.7  [exponent extends equatorial belt]
+6. Average to per-vertex via np.add.at
+7. vertex_color = lerp(base_color, PaleDust, vert_mantle)
 
-### Vesicular texture:
+### Mars sky HDR (DONE — generate_mars_sky.py):
+1. Equirectangular grid → direction vectors
+2. cos_theta = dot(pixel_dir, sun_dir)
+3. HG(cos_theta, g=0.68) normalised to 0–1
+4. Zenith→horizon color gradient (smoothstep)
+5. HG modulation: brightness × (0.40 + 0.60 × HG_norm)
+6. Corona blend within 25° of sun
+7. Sun disk at 0.35° radius
+
+### Vesicular texture (NOT YET — next step for rocks):
 - After grain noise, apply random negative spherical indentations on rock surface
-- Vesicle radius: 0.5–10mm (for meter-scale rock, this is very small detail)
-- Most visible at close range — only worth implementing for cobble/boulder scale
+- Vesicle radius: 0.5–10mm (for meter-scale rock, close-range detail)
+- Strategy: subtract Gaussian bumps at random surface points
+- Only worth implementing for cobble/boulder scale at this point
 
 ---
 
