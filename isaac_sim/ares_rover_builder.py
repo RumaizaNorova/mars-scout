@@ -382,35 +382,77 @@ def _build_mast(stage, root: str) -> None:
     UsdGeom.Xformable(stage.GetPrimAtPath(mast_head)).AddTranslateOp().Set(
         Gf.Vec3d(D.MAST_HEAD_FWD, 0, D.MAST_H))
 
-    # MastCam-Z LEFT (NavCam)
+    # MastCam-Z LEFT — science camera, wide-angle setting
+    # Spec: Hayes et al. 2021 SSR 217:48, Section 3.2 (Mastcam-Z optical model)
+    #   Focal length:        26 mm  (wide end of 26–110 mm zoom)
+    #   Sensor:              1648 × 1200 active pixels, 4.34 µm pitch
+    #   Sensor width:        1648 × 4.34 µm = 7.153 mm  (Malin 2020 SSR 215:30)
+    #   HFOV at 26 mm:       25.8°  (Hayes 2021 Table 1, confirmed Bell 2021 Table 2)
+    #   Required aperture:   2 × 26 × tan(12.9°) = 11.91 mm
+    #   Stereo baseline:     24.3 cm  (centre-to-centre of L+R lenses)
+    #
+    # CORRECTION from previous session:
+    #   Was: horizontal_aperture_mm=9.37 → FOV=20.4°  (WRONG — off by 5.4°)
+    #   Now: horizontal_aperture_mm=11.91 → FOV=25.8° (Hayes 2021 — correct)
+    #   The 9.37 mm value had no verified primary-source derivation and is discarded.
     cam_l = f"{mast_root}/MastCamL"
     _define_camera(stage, cam_l,
-                   pos=(D.MAST_CAM_FWD, +0.12, D.MAST_H),
-                   pitch_down_deg=15.0, focal_mm=18.0)
+                   pos=(D.MAST_CAM_FWD, +0.1215, D.MAST_H),
+                   pitch_down_deg=15.0,
+                   focal_mm=26.0,
+                   horizontal_aperture_mm=11.91)
 
-    # MastCam-Z RIGHT (NavCam)
+    # MastCam-Z RIGHT — stereo partner (identical optics, +24.3 cm baseline)
     cam_r = f"{mast_root}/MastCamR"
     _define_camera(stage, cam_r,
-                   pos=(D.MAST_CAM_FWD, -0.12, D.MAST_H),
-                   pitch_down_deg=15.0, focal_mm=18.0)
+                   pos=(D.MAST_CAM_FWD, -0.1215, D.MAST_H),
+                   pitch_down_deg=15.0,
+                   focal_mm=26.0,
+                   horizontal_aperture_mm=11.91)
 
     # ── Chase camera (3rd-person follow) ──────────────────────────────────────
-    # Sits behind and above the rover body, looks forward+down at the rover.
+    # Wider FOV (≈80°) for situational awareness; not used for science.
+    # focal_mm=12.0, horizontalAperture left at USD default (20.955) → ~88° FOV
+    # — appropriately wide for a cinematic 3rd-person view.
     chase_cam = f"{root}/ChaseCamera"
     _define_camera(stage, chase_cam,
                    pos=(D.CHASE_X, 0.0, D.CHASE_Z + D.SUSP_HEIGHT + D.BODY_H / 2),
                    pitch_down_deg=D.CHASE_PITCH_DEG,
-                   focal_mm=12.0)   # wider FOV for chase view
+                   focal_mm=12.0)   # no aperture override: default ~88° FOV is correct
 
 
-def _define_camera(stage, path: str,
-                   pos: Tuple[float, float, float],
-                   pitch_down_deg: float,
-                   focal_mm: float) -> None:
+def _define_camera(
+    stage,
+    path: str,
+    pos: Tuple[float, float, float],
+    pitch_down_deg: float,
+    focal_mm: float,
+    horizontal_aperture_mm: float | None = None,
+) -> None:
     """
     Define a Camera prim facing +X with a nose-down pitch.
     Isaac Sim cameras default to -Z (straight down in Z-up world).
     Formula: rotX(90 - pitch_down_deg) then rotZ(-90) → faces +X, pitched down.
+
+    USD camera FOV formula:
+      FOV_h = 2 × atan(horizontalAperture / (2 × focalLength))
+    Both attributes use the same internal unit (USD "tenths of scene unit" is
+    the spec, but in practice Isaac Sim uses the raw ratio — only RATIO matters).
+
+    Mastcam-Z specification (Hayes et al. 2021 SSR 217:48, Table 1):
+      Sensor:              1648×1200 active pixels, 4.34 µm pitch
+      Sensor width:        1648 × 4.34 µm = 7.153 mm  (Malin 2020 SSR 215:30)
+      Focal length (wide): 26 mm
+      HFOV at 26 mm:       25.8°  → aperture = 2×26×tan(12.9°) = 11.91 mm  ✓
+      NOTE: the value 9.37 mm (→ FOV=20.4°) used in the previous session was
+      incorrect (no verified primary source).  11.91 mm is the correct value.
+
+    Parameters
+    ----------
+    focal_mm                : focal length in camera model units
+    horizontal_aperture_mm  : sensor width in SAME units as focal_mm.
+                              None → USD default (20.955) → yields FOV ≈ 60°
+                              which is appropriate for NavCam / chase camera.
     """
     cam_prim = stage.DefinePrim(path, "Camera")
     xf = UsdGeom.Xformable(cam_prim)
@@ -419,6 +461,29 @@ def _define_camera(stage, path: str,
     xf.AddRotateXYZOp().Set(Gf.Vec3f(rx, 0.0, -90.0))
     cam_prim.GetAttribute("focalLength").Set(focal_mm)
     cam_prim.GetAttribute("clippingRange").Set(Gf.Vec2f(0.01, 10000.0))
+
+    if horizontal_aperture_mm is not None:
+        # Validate: aperture must be positive and smaller than focal length ×2π
+        # (max physically meaningful FOV is 180°)
+        import math as _math
+        if horizontal_aperture_mm <= 0.0:
+            raise ValueError(
+                f"_define_camera {path}: horizontal_aperture_mm must be positive, "
+                f"got {horizontal_aperture_mm}"
+            )
+        fov_rad = 2.0 * _math.atan(horizontal_aperture_mm / (2.0 * focal_mm))
+        if fov_rad >= _math.radians(160.0):
+            raise ValueError(
+                f"_define_camera {path}: aperture/focal ratio gives FOV {_math.degrees(fov_rad):.1f}° "
+                f"(≥160°) — likely wrong unit; "
+                f"horizontal_aperture_mm={horizontal_aperture_mm}, focal_mm={focal_mm}. "
+                f"Mastcam-Z should be focal=26.0, aperture=11.91 → ~25.8° (Hayes 2021)."
+            )
+        cam_prim.GetAttribute("horizontalAperture").Set(horizontal_aperture_mm)
+        import math as _m2
+        print(f"[ares_rover]   {path.split('/')[-1]}: "
+              f"focal={focal_mm}mm aperture={horizontal_aperture_mm}mm "
+              f"→ FOV={_math.degrees(fov_rad):.1f}°")
 
 
 def _build_rtg(stage, root: str) -> None:

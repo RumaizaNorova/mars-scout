@@ -1,0 +1,224 @@
+// rock_triplanar.mdl
+// ──────────────────────────────────────────────────────────────────────────────
+// Triplanar-projected vesicle normal map for Mars basalt rocks.
+//
+// Why triplanar?
+// ──────────────
+// Rock meshes are icospheres with CatmullClark subdivision — nearly spherical,
+// with no natural UV chart.  Spherical UV projection creates severe stretching
+// at the poles (atan2 singularity) and seam artefacts where u wraps from 2π→0.
+//
+// Triplanar projection samples the texture 3 times:
+//   Plane 1 (XY, z-facing): UV = (world.x, world.y) / tile_m
+//   Plane 2 (XZ, y-facing): UV = (world.x, world.z) / tile_m
+//   Plane 3 (YZ, x-facing): UV = (world.y, world.z) / tile_m
+//
+// Each sample is blended by |N|^sharpness, normalised so weights sum to 1.
+// There are no UV seams, no poles, and every face receives equally detailed
+// vesicle normal mapping regardless of orientation.
+//
+// Normal blending
+// ───────────────
+// For each projection plane, base::tangent_space_normal_texture() is called
+// with an explicit tangent frame that matches the plane's orientation.
+// Each call returns a perturbed normal in internal space.
+// The three results are blended with the triplanar weights.
+//
+// Rock material composition
+// ─────────────────────────
+// The rock colour is carried by the per-vertex "displayColor" primvar
+// (_compute_rock_face_colors: top=dust, sides=base-geology, bottom=rust).
+// The vesicle normal map adds sub-mm gas-bubble pitting detail on top of the
+// macro catmullClark geometry and the 5–15 cm cavernous pit geometry.
+//
+// References
+// ──────────
+//   Squyres et al. 2004, Science 305:709   — vesicular basalt at Meridiani
+//   Bhartia et al. 2021, Science 374:1222  — SHERLOC vesicle statistics
+//   Farrand et al. 2014, Icarus 239:460    — Mars rock spectral classes
+//   Bell et al. 2004, Science 305:800      — MER surface colour
+//   Golombek 2008, JGR 113:E00A11         — rock surface roughness
+// ──────────────────────────────────────────────────────────────────────────────
+
+mdl 1.6;
+
+import ::anno::*;
+import ::base::*;
+import ::df::*;
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+
+
+export material rock_triplanar(
+
+    // ── Normal map ────────────────────────────────────────────────────────────
+    uniform texture_2d vesicle_normal = texture_2d("../data/rock_vesicle_normal.png",
+                                                    ::tex::gamma_linear)
+    [[  anno::display_name("Vesicle Normal Map (Linear)"),
+        anno::description(
+            "Sub-mm gas-bubble pitting normals from generate_terrain_textures.py. "
+            "Bhartia 2021: ~25 vesicles/cm², lognormal radii μ=0.8mm σ=0.6.") ]],
+
+    uniform float tile_m = 0.20
+    [[  anno::display_name("Tile Size  [metres]"),
+        anno::hard_range(0.02, 2.0),
+        anno::description(
+            "World-space size of one texture tile in metres. "
+            "0.20 m matches the generator — vesicles are 0.5–3mm radius.") ]],
+
+    uniform float blend_sharpness = 4.0
+    [[  anno::display_name("Triplanar Blend Sharpness"),
+        anno::hard_range(1.0, 16.0),
+        anno::description(
+            "Exponent applied to |N| blend weights. "
+            "1 = very wide blend zone (softer seams). "
+            "4 = standard sharp blend (≈ ±15° around 45° seam). "
+            "8 = very sharp (narrow seam but more contrast between faces).") ]],
+
+    uniform float normal_strength = 1.0
+    [[  anno::display_name("Normal Map Strength"),
+        anno::hard_range(0.0, 3.0),
+        anno::description(
+            "Scales the tangential component of sampled normals. "
+            "1.0 = physically calibrated vesicle depth. "
+            "> 1 = exaggerated pitting (artistic/diagnostic). "
+            "0.0 = flat (no normal perturbation).") ]],
+
+    // ── Surface material ──────────────────────────────────────────────────────
+    uniform float roughness = 0.78
+    [[  anno::display_name("Surface Roughness"),
+        anno::hard_range(0.0, 1.0),
+        anno::description(
+            "Basalt surface roughness from Golombek 2008 InSight IDP survey. "
+            "0.78 = weathered dark basalt (no dust coating). "
+            "Dust-coated surfaces: 0.85–0.92.") ]],
+
+    uniform float specular_weight = 0.04
+    [[  anno::display_name("Specular Weight"),
+        anno::hard_range(0.0, 1.0),
+        anno::description(
+            "Fresnel 0° reflectance for basalt glass.  "
+            "Basaltic glass n≈1.70 → F₀=(n−1)²/(n+1)²=0.067; "
+            "Effective value ~0.04 accounting for surface roughness.") ]]
+
+) = let {
+
+    // ── 1. World-space position and normal ───────────────────────────────────
+    float3 world_pos = state::position();
+    float3 world_n   = state::normal();
+
+    // ── 2. Triplanar blend weights ────────────────────────────────────────────
+    // w = |N|^sharpness, then normalised so w.x + w.y + w.z = 1.
+    // A sharpness of 4 means a face at 45° between two axes gets equal weight;
+    // faces more than ~15° from any axis are dominated by their nearest axis.
+    float3 w_raw    = math::pow(math::abs(world_n), float3(blend_sharpness));
+    float  w_sum    = w_raw.x + w_raw.y + w_raw.z + 1e-9;
+    float3 w        = w_raw / w_sum;
+
+    // ── 3. World-space UV for each projection plane ──────────────────────────
+    // Scale by 1/tile_m so one tile = tile_m metres.
+    float inv_tile  = 1.0 / tile_m;
+
+    // Z-facing plane (XY projection) — dominates near-horizontal faces (top of rock)
+    float2 uv_z = float2(world_pos.x, world_pos.y) * inv_tile;
+
+    // Y-facing plane (XZ projection) — dominates side faces
+    float2 uv_y = float2(world_pos.x, world_pos.z) * inv_tile;
+
+    // X-facing plane (YZ projection) — dominates side faces orthogonal to Y-sides
+    float2 uv_x = float2(world_pos.y, world_pos.z) * inv_tile;
+
+    // ── 4. Sample normal map on each plane with correct tangent frame ─────────
+    //
+    // base::tangent_space_normal_texture() takes a texture_coordinate_info that
+    // specifies both the 2D UV (position.xy) and the tangent frame (tangent_u, v).
+    // The tangent frame for each plane defines how tangent-space N is lifted to
+    // internal (object) space.
+    //
+    // Z-plane: tangent_u = +X, tangent_v = +Y, face normal = +Z (sign = sign(N.z))
+    // Y-plane: tangent_u = +X, tangent_v = +Z, face normal = +Y (sign = sign(N.y))
+    // X-plane: tangent_u = +Y, tangent_v = +Z, face normal = +X (sign = sign(N.x))
+    //
+    // sign() of the normal ensures normals on the -Z bottom face aren't flipped.
+
+    float3 n_z = base::tangent_space_normal_texture(
+        texture:        vesicle_normal,
+        factor:         normal_strength,
+        flip_tangent_u: false,
+        flip_tangent_v: false,
+        uvw: base::texture_coordinate_info(
+            position:  float3(uv_z.x, uv_z.y, 0.0),
+            tangent_u: float3(1.0, 0.0, 0.0),
+            tangent_v: float3(0.0, math::sign(world_n.z + 1e-9), 0.0)
+        )
+    );
+
+    float3 n_y = base::tangent_space_normal_texture(
+        texture:        vesicle_normal,
+        factor:         normal_strength,
+        flip_tangent_u: false,
+        flip_tangent_v: false,
+        uvw: base::texture_coordinate_info(
+            position:  float3(uv_y.x, uv_y.y, 0.0),
+            tangent_u: float3(1.0, 0.0, 0.0),
+            tangent_v: float3(0.0, 0.0, math::sign(world_n.y + 1e-9))
+        )
+    );
+
+    float3 n_x = base::tangent_space_normal_texture(
+        texture:        vesicle_normal,
+        factor:         normal_strength,
+        flip_tangent_u: false,
+        flip_tangent_v: false,
+        uvw: base::texture_coordinate_info(
+            position:  float3(uv_x.x, uv_x.y, 0.0),
+            tangent_u: float3(0.0, 1.0, 0.0),
+            tangent_v: float3(0.0, 0.0, math::sign(world_n.x + 1e-9))
+        )
+    );
+
+    // ── 5. Blend normals by triplanar weights ─────────────────────────────────
+    // Each n_* is already in internal space; weighted sum + normalise.
+    float3 blended_normal = math::normalize(
+        n_x * w.x + n_y * w.y + n_z * w.z
+    );
+
+    // ── 6. Diffuse colour from per-vertex 3-channel model ────────────────────
+    // state::color() reads the "displayColor" primvar set by _compute_rock_face_colors:
+    //   top faces (fn_z > 0.40):   ferric dust tint (Bell 2004 c_top_dust)
+    //   side faces:                base geology colour (Farrand 2014 Máaz basalt)
+    //   bottom faces (fn_z <-0.25): rust leach tint (Banfield 2021 Fe³⁺)
+    color rock_diffuse = state::color();
+
+    // ── 7. Build BSDF ─────────────────────────────────────────────────────────
+    // Basalt: diffuse base + moderate Fresnel specular.
+    // No metallic (basalt is dielectric).  Roughness = 0.78 (Golombek 2008).
+
+    bsdf diffuse_layer = df::diffuse_reflection_bsdf(
+        tint:      rock_diffuse,
+        roughness: roughness
+    );
+
+    // Thin Fresnel specular for basaltic glass glint
+    bsdf specular_layer = df::simple_glossy_bsdf(
+        roughness: roughness,
+        tint:      color(specular_weight),
+        mode:      df::scatter_mode::scatter_reflect
+    );
+
+    bsdf rock_bsdf = df::normalized_mix(
+        components: df::bsdf_component[](
+            df::bsdf_component(weight: 1.0 - specular_weight, component: diffuse_layer),
+            df::bsdf_component(weight: specular_weight,       component: specular_layer)
+        )
+    );
+
+} in material(
+    surface: material_surface(
+        scattering: rock_bsdf
+    ),
+    geometry: material_geometry(
+        normal: blended_normal
+    )
+);
