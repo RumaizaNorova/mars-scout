@@ -1,10 +1,15 @@
 """
-Full pipeline launch — Isaac Sim + Moondream2 (GPU instance).
+Full pipeline launch — Isaac Sim + Gemini Vision (GPU instance).
 
 Usage
 -----
   ros2 launch mars_scout_bringup full.launch.py
   ros2 launch mars_scout_bringup full.launch.py query:="find the skull rock"
+
+Requires
+--------
+  GOOGLE_API_KEY environment variable set before launch.
+  The perception node will raise RuntimeError at startup if the key is missing.
 """
 
 from launch import LaunchDescription
@@ -31,7 +36,7 @@ def generate_launch_description():
         executable = "perception_node",
         name       = "perception_node",
         parameters = [{
-            "backend":           "moondream2",
+            "backend":           "gemini",
             "inference_rate_hz": 1.0,
             "default_query":     LaunchConfiguration("query"),
         }],

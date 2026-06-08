@@ -212,20 +212,30 @@ def _generate_regolith_albedo(W: int, H: int, seed: int) -> np.ndarray:
     # Basalt albedo ~0.10 vs dust-coated ~0.22 → darken by 0.12
     dark_reduce = dark_mask * 0.12
 
-    # --- Layer 4: subtle ripple albedo modulation ---
-    # Ripple λ = 3.5 m, tile = 2.0 m → 3.5/2.0 = 1.75 tile-widths per ripple
-    # → spatial frequency in texture = 1/1.75 * W cycles per image ≈ 0.571 W
-    ripple_freq = W / (3.5 / 2.0)   # cycles per image at tile=2m
+    # --- Layer 4: ripple albedo modulation with Vaughan 2023 grain-colour ---
+    # Lapôtre 2016: primary ripple λ = 2.1 m, tile = 2.0 m
+    # → spatial frequency = 2.0/2.1 cycles per tile = 0.952 W cycles per image
+    # (was 3.5m: 0.571 W — now correctly shows ~1 ripple per 2m tile)
+    ripple_freq = W * (2.0 / 2.1)   # cycles per image at tile=2m, λ=2.1m (Lapôtre 2016)
     x_norm = np.arange(W) / W
-    # Ripple runs mostly E-W (main Mars wind direction, Sullivan 2005)
+    # Transport 276° WSW (Chojnacki 2018 / MEDA) — ripple crests run N-S
     ripple_phase = rng.uniform(0.0, 2.0 * np.pi)
-    ripple_1d = 0.03 * np.sin(2.0 * np.pi * ripple_freq * x_norm + ripple_phase)
+    ripple_1d = np.sin(2.0 * np.pi * ripple_freq * x_norm + ripple_phase)
     ripple_2d = np.tile(ripple_1d, (H, 1))
 
+    # Vaughan 2023: ripple crests have 1-2mm olivine grains (greenish-dark).
+    # Olivine Fe-Mg silicate: lower red reflectance, slightly higher green/NIR.
+    # At Mastcam-Z L3 (677nm) olivine is ~15% darker than pyroxene dust.
+    # Encode as: crest (ripple_2d > 0) → slightly green-shifted, lower red.
+    # Magnitude: ±3% R, ±1% G modulation from grain colour (subtle but physical).
+    ripple_r  = ripple_2d * (-0.03)   # crests: less red  (olivine absorbs more at 600nm)
+    ripple_g  = ripple_2d * (+0.01)   # crests: tiny green boost  (olivine 800nm/~1μm)
+    ripple_b  = ripple_2d * (-0.005)  # near-neutral in blue
+
     # --- Assemble RGB ---
-    r = base_r + comp_noise + dust_r - dark_reduce + ripple_2d
-    g = base_g + comp_noise * 0.65 + dust_g - dark_reduce + ripple_2d * 0.75
-    b = base_b + comp_noise * 0.45 + dust_b - dark_reduce + ripple_2d * 0.55
+    r = base_r + comp_noise + dust_r - dark_reduce + ripple_r
+    g = base_g + comp_noise * 0.65 + dust_g - dark_reduce + ripple_g
+    b = base_b + comp_noise * 0.45 + dust_b - dark_reduce + ripple_b
 
     # Clamp to physical range [0, 1]
     r = np.clip(r, 0.0, 1.0)
@@ -262,9 +272,15 @@ def _generate_regolith_normal(
 
     Height model
     ------------
-    Sullivan et al. 2005: megaripple λ=3.5 m, amplitude A=λ×0.025 ≈ 0.088 m
-    Cross-bedding: secondary ripple at 28° to primary, λ=1.8 m, A=0.025 m
-    Fine grain noise: λ=0.1–0.3 m, A=0.005 m  (grain ripples, Bridges 2012)
+    Lapôtre et al. 2016 (Science 353): primary aeolian ripples λ=2.1 m (mean,
+        range 1–5 m), steepness h/λ ≈ 0.057 → amplitude A = 2.1 × 0.057 = 0.120 m.
+        (Previous value λ=3.5 m, A=0.088 m was from Sullivan 2005 Meridiani;
+        Lapôtre 2016 is the Bagnold Dune ground truth used by Perseverance.)
+    Vaughan et al. 2023 (JGR Planets): grain-size mapping at Jezero shows
+        100 μm pyroxene in inter-ripple troughs, 1–2 mm olivine at ripple crests.
+    Cross-bedding: secondary bedform at 28° to primary, λ=1.0 m, A=0.018 m
+        (intra-ripple grain-sorting wavelength, consistent with Lapôtre 2016 Fig. S7)
+    Fine grain noise: λ=0.1–0.3 m, A=0.005 m  (saltation grain-roughness, Bridges 2012)
     Background roughness (Hapke θ_bar = 10°): σ_h ≈ tile × tan(10°)/6 ≈ 0.059 m
 
     Normal computation
@@ -282,15 +298,19 @@ def _generate_regolith_normal(
     xm = X_idx * px_size_x   # metres
     ym = Y_idx * px_size_y
 
-    # --- Primary aeolian ripple (Sullivan 2005 λ=3.5 m, H/λ=0.025) ---
-    lam_main = 3.5   # metres
-    amp_main = lam_main * 0.025   # 0.0875 m
+    # --- Primary aeolian ripple (Lapôtre 2016 λ=2.1 m, h/λ=0.057) ---
+    # Lapôtre et al. 2016 Science 353 — Bagnold Dune Field ground truth
+    # Matches terrain builder _add_aeolian_ripples (same λ, same amplitude)
+    lam_main = 2.1          # metres  (was 3.5 — Lapôtre 2016 correction)
+    amp_main = lam_main * 0.057   # = 0.120 m  (h/λ = 0.057, Lapôtre 2016)
     phase_main = rng.uniform(0.0, 2.0 * np.pi)
     h_main = amp_main * np.sin(2.0 * np.pi / lam_main * xm + phase_main)
 
-    # --- Cross-bedding (28° from main direction, Sullivan 2005 Fig. 4) ---
-    lam_cross = 1.8   # metres
-    amp_cross = 0.025   # metres
+    # --- Cross-bedding / secondary grain-sorting (Lapôtre 2016, 28° oblique) ---
+    # λ=1.0 m (intra-ripple grain-sorting wavelength, Lapôtre 2016 Fig. S7)
+    # Amplitude 0.018 m (15% of primary)
+    lam_cross = 1.0   # metres  (was 1.8 — too large relative to primary)
+    amp_cross = 0.018  # metres  (15% of primary, Lapôtre 2016 relative scale)
     angle_cross = np.radians(28.0)
     phase_cross = rng.uniform(0.0, 2.0 * np.pi)
     h_cross = amp_cross * np.sin(
@@ -367,26 +387,40 @@ def _generate_regolith_roughness(
     """
     Generate a PBR roughness map for Mars regolith (float64 H×W in [0,1]).
 
-    Roughness model (perceptual, not physical)
-    ------------------------------------------
+    Roughness model (perceptual PBR roughness, not physical Hapke θ)
+    -----------------------------------------------------------------
     Base value 0.58  — loose sand/dust regolith (Golombek et al. 2008 InSight)
-    Ripple crests:  +0.07  — exposed coarser grains on crest armour (Sullivan 2005)
-    Ripple troughs: −0.08  — wind-smoothed fine dust settles in troughs
+
+    Grain-size modulation calibrated to Vaughan et al. 2023 (JGR Planets):
+      Vaughan 2023 Mastcam-Z grain-size mapping at Jezero reveals:
+        Inter-ripple matrix (troughs): ~100 μm pyroxene grains (silt/fine sand)
+        Ripple crest armour:           1–2 mm olivine grains  (medium sand)
+      In PBR terms, larger grains → higher micro-facet roughness:
+        Crest  (+0.12):  1-2 mm olivine → rough surface, perceptual roughness ~0.70
+        Trough (−0.12):  100 μm pyroxene → smooth powder, perceptual roughness ~0.46
+        (was crest +0.07 / trough −0.08 — insufficient grain-size contrast)
+
     Gravel patches: +0.15  — angular gravel fragments, Golombek 2008 Fig. 12
     Polished slabs: −0.18  — rare wind-polished basalt (roughness ~0.35)
+
+    References
+    ----------
+    Vaughan et al. 2023 JGR Planets 10.1029/2022JE007437 — grain-size mapping
+    Golombek et al. 2008 JGR 113 E00A11 — base regolith roughness InSight site
     """
     rng = np.random.default_rng(seed)
 
     base = 0.58  # Golombek 2008
 
-    # --- Ripple modulation from height field ---
+    # --- Ripple modulation from height field (Vaughan 2023 grain-size calibrated) ---
     if height_field is not None:
         h_norm = height_field - height_field.mean()
         h_std = h_norm.std()
         if h_std < 1e-9:
             raise ValueError("roughness: height_field has zero variance")
         h_01 = (h_norm / h_std) * 0.5   # crest → +0.5σ, trough → −0.5σ
-        ripple_mod = np.clip(h_01 * 0.15, -0.08, 0.07)
+        # Vaughan 2023: crest (+0.12 for 1-2mm olivine) / trough (−0.12 for 100μm pyroxene)
+        ripple_mod = np.clip(h_01 * 0.24, -0.12, 0.12)
     else:
         ripple_mod = np.zeros((H, W))
 
@@ -409,11 +443,12 @@ def _generate_regolith_roughness(
     roughness = base + ripple_mod + gravel_add - slab_sub
     roughness = np.clip(roughness, 0.10, 0.95)   # physical bounds
 
-    # Sanity
+    # Sanity — tolerance 0.16 to accommodate Vaughan 2023 grain modulation ±0.12
     mean_r = float(roughness.mean())
-    if abs(mean_r - base) > 0.12:
+    if abs(mean_r - base) > 0.16:
         raise RuntimeError(
-            f"roughness: mean {mean_r:.3f} deviates too far from base {base:.3f}"
+            f"roughness: mean {mean_r:.3f} deviates too far from base {base:.3f} "
+            f"(Vaughan 2023 grain modulation ±0.12 is expected)"
         )
 
     return roughness
@@ -662,7 +697,7 @@ def _run_self_tests(outputs: dict[str, Path]) -> None:
     )
     # R and G std should be > 0 — verifies actual slope structure exists
     # Note: mean R/G may deviate from 0.5 if tile does not contain an integer
-    # number of ripple periods (tile=2m, λ=3.5m → 0.57 periods/tile).
+    # number of ripple periods (tile=2m, λ=2.1m → 0.95 periods/tile — Lapôtre 2016).
     std_r = float(norm[:, :, 0].std())
     std_g = float(norm[:, :, 1].std())
     assert std_r > 0.005, (
@@ -682,11 +717,11 @@ def _run_self_tests(outputs: dict[str, Path]) -> None:
     # --- Roughness ---
     rgh = np.asarray(Image.open(outputs["regolith_roughness"])).astype(np.float64) / 255.0
     mean_rgh = float(rgh.mean())
-    # Base roughness 0.58 ± 0.12
-    assert 0.40 < mean_rgh < 0.72, (
-        f"roughness: mean {mean_rgh:.3f} outside expected range [0.40, 0.72]"
+    # Base roughness 0.58 ± 0.14 (Vaughan 2023 grain modulation ±0.12 widens range)
+    assert 0.38 < mean_rgh < 0.75, (
+        f"roughness: mean {mean_rgh:.3f} outside expected range [0.38, 0.75]"
     )
-    print(f"  roughness: mean={mean_rgh:.3f} (range 0.40–0.72) ✓")
+    print(f"  roughness: mean={mean_rgh:.3f} (range 0.38–0.75 — Vaughan 2023) ✓")
 
     # --- Vesicle normal ---
     ves = np.asarray(Image.open(outputs["rock_vesicle_normal"])).astype(np.float64) / 255.0

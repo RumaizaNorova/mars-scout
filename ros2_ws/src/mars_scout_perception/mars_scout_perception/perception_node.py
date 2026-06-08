@@ -14,7 +14,7 @@ Published
 
 Parameters
 ----------
-backend          : "mock" | "moondream2"   (default: "mock")
+backend          : "mock" | "moondream2" | "gemini"   (default: "mock")
 inference_rate_hz: float                   max VLM calls per second (default: 2.0)
 min_confidence   : float                   suppress targets below this (default: 0.4)
 """
@@ -138,9 +138,14 @@ class PerceptionNode(Node):
         elif name == "moondream2":
             from mars_scout_perception.vlm_backend import Moondream2Backend
             return Moondream2Backend()
+        elif name == "gemini":
+            from mars_scout_perception.vlm_backend import GeminiVisionBackend
+            return GeminiVisionBackend()
         else:
-            self.get_logger().warn(f"Unknown backend '{name}', falling back to mock.")
-            return MockVLMBackend()
+            raise RuntimeError(
+                f"Unknown VLM backend '{name}'. "
+                f"Valid options: 'mock', 'moondream2', 'gemini'."
+            )
 
 
 def main(args=None):

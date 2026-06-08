@@ -132,6 +132,98 @@ D = RoverDims  # short alias
 
 
 # =============================================================================
+# Mastcam-Z filter bank  (Hayes et al. 2021 SSR 217:48, Table 3)
+# =============================================================================
+#
+# Two filter wheels, one per camera.  Each has 6 narrowband filters + clear.
+# All values are nominal centre wavelength (nm) and FWHM bandwidth (nm).
+#
+# These are stored as USD custom attributes on the camera prim so that any
+# downstream pipeline (ROS2 perception node, VLM prompt builder, spectral
+# post-processor) can look up which band an image was captured in.
+#
+# Reference: Hayes et al. 2021 SSR 217(4):48  doi:10.1007/s11214-021-00795-x
+#            Bell et al. 2021 Earth Space Sci  (Mastcam-Z commissioning overview)
+#
+MASTCAM_Z_FILTERS: dict[str, list[dict]] = {
+    # Left camera: visible + short NIR (science geology filters)
+    "L": [
+        {"id": "L0", "name": "clear",     "center_nm":  800, "fwhm_nm":  None},  # broadband
+        {"id": "L1", "name": "NIR1",      "center_nm":  800, "fwhm_nm":   18},
+        {"id": "L2", "name": "NIR2",      "center_nm":  754, "fwhm_nm":   20},
+        {"id": "L3", "name": "red",       "center_nm":  677, "fwhm_nm":   22},
+        {"id": "L4", "name": "green",     "center_nm":  605, "fwhm_nm":   18},
+        {"id": "L5", "name": "blue-green","center_nm":  528, "fwhm_nm":   22},
+        {"id": "L6", "name": "violet",    "center_nm":  442, "fwhm_nm":   24},
+    ],
+    # Right camera: red + NIR (mineralogy discrimination filters)
+    "R": [
+        {"id": "R0", "name": "clear",     "center_nm":  800, "fwhm_nm":  None},  # broadband
+        {"id": "R1", "name": "NIR1",      "center_nm":  800, "fwhm_nm":   18},
+        {"id": "R2", "name": "NIR2",      "center_nm":  866, "fwhm_nm":   20},
+        {"id": "R3", "name": "NIR3",      "center_nm":  910, "fwhm_nm":   24},
+        {"id": "R4", "name": "NIR4",      "center_nm":  939, "fwhm_nm":   24},
+        {"id": "R5", "name": "NIR5",      "center_nm":  978, "fwhm_nm":   20},
+        {"id": "R6", "name": "NIR6",      "center_nm": 1022, "fwhm_nm":   38},
+    ],
+}
+
+
+def _apply_mastcam_z_filters(stage, cam_path: str, side: str) -> None:
+    """
+    Stamp Mastcam-Z filter metadata onto a camera USD prim as custom attributes.
+
+    Attributes written (all under 'mcz:' namespace to avoid collisions):
+      mcz:camera_side          string  "L" or "R"
+      mcz:filter_ids           string  comma-separated list e.g. "L0,L1,L2,…"
+      mcz:filter_names         string  comma-separated names
+      mcz:filter_centers_nm    int[]   centre wavelengths in nm
+      mcz:filter_fwhm_nm       int[]   FWHM bandwidths (-1 for broadband clear)
+
+    These are custom primvars — they don't affect Isaac Sim rendering but are
+    accessible to any USD-aware code that opens the stage.
+
+    Parameters
+    ----------
+    stage    : Usd.Stage
+    cam_path : USD path to the camera prim
+    side     : "L" or "R"
+
+    Raises
+    ------
+    ValueError  if `side` is not "L" or "R"
+    RuntimeError if `cam_path` does not exist on stage
+    """
+    if side not in ("L", "R"):
+        raise ValueError(
+            f"_apply_mastcam_z_filters: side must be 'L' or 'R', got {side!r}"
+        )
+    prim = stage.GetPrimAtPath(cam_path)
+    if not prim.IsValid():
+        raise RuntimeError(
+            f"_apply_mastcam_z_filters: prim not found at {cam_path!r}"
+        )
+
+    filters = MASTCAM_Z_FILTERS[side]
+
+    ids_str     = ",".join(f["id"]   for f in filters)
+    names_str   = ",".join(f["name"] for f in filters)
+    centers     = [f["center_nm"]              for f in filters]
+    fwhms       = [f["fwhm_nm"] if f["fwhm_nm"] is not None else -1
+                   for f in filters]
+
+    prim.CreateAttribute("mcz:camera_side",       Sdf.ValueTypeNames.String).Set(side)
+    prim.CreateAttribute("mcz:filter_ids",         Sdf.ValueTypeNames.String).Set(ids_str)
+    prim.CreateAttribute("mcz:filter_names",       Sdf.ValueTypeNames.String).Set(names_str)
+    prim.CreateAttribute("mcz:filter_centers_nm",  Sdf.ValueTypeNames.IntArray).Set(centers)
+    prim.CreateAttribute("mcz:filter_fwhm_nm",     Sdf.ValueTypeNames.IntArray).Set(fwhms)
+
+    import math as _m
+    print(f"[ares_rover] Mastcam-Z {side} filters applied to {cam_path.split('/')[-1]}: "
+          f"{ids_str}  centres={centers}")
+
+
+# =============================================================================
 # USD geometry helpers
 # =============================================================================
 
@@ -401,6 +493,8 @@ def _build_mast(stage, root: str) -> None:
                    pitch_down_deg=15.0,
                    focal_mm=26.0,
                    horizontal_aperture_mm=11.91)
+    # Stamp filter metadata — Hayes 2021 L-camera (visible + short NIR)
+    _apply_mastcam_z_filters(stage, cam_l, "L")
 
     # MastCam-Z RIGHT — stereo partner (identical optics, +24.3 cm baseline)
     cam_r = f"{mast_root}/MastCamR"
@@ -409,6 +503,8 @@ def _build_mast(stage, root: str) -> None:
                    pitch_down_deg=15.0,
                    focal_mm=26.0,
                    horizontal_aperture_mm=11.91)
+    # Stamp filter metadata — Hayes 2021 R-camera (red + NIR mineralogy)
+    _apply_mastcam_z_filters(stage, cam_r, "R")
 
     # ── Chase camera (3rd-person follow) ──────────────────────────────────────
     # Wider FOV (≈80°) for situational awareness; not used for science.

@@ -7,11 +7,16 @@ version: "3.9"
 # mock     Mac / CPU dev — full mock pipeline, no GPU needed
 #          docker compose up mock
 #
-# gpu      Vast.ai / Lambda GPU host — full Isaac Sim + Moondream2 stack
-#          docker compose up gpu
+# gpu      Vast.ai / Lambda GPU host — full Isaac Sim + Gemini Vision stack
+#          GOOGLE_API_KEY=<key> docker compose up gpu
 #
 # test     Run the full test suite and exit
 #          docker compose run --rm test
+#
+# Required env vars (on the host before running)
+# -----------------------------------------------
+#   GOOGLE_API_KEY   — Google AI Studio key for Gemini Vision backend
+#                      The perception node raises at startup if this is unset.
 
 services:
 
@@ -31,6 +36,8 @@ services:
       - mars_images:/root/mars-scout/ros2_ws/src/mars_scout_mock/data
     environment:
       - ROS_DOMAIN_ID=42
+      # Optional: set GOOGLE_API_KEY if you want to test gemini backend locally
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
@@ -63,6 +70,21 @@ services:
       - ROS_DOMAIN_ID=42
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:?GOOGLE_API_KEY must be set on the host}
+      # MongoDB Atlas
+      - MONGODB_URI=${MONGODB_URI:?MONGODB_URI must be set}
+      # Elasticsearch
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:?ELASTICSEARCH_URL must be set}
+      - ELASTICSEARCH_API_KEY=${ELASTICSEARCH_API_KEY:-}
+      # Elastic APM (optional)
+      - ELASTIC_APM_SERVER_URL=${ELASTIC_APM_SERVER_URL:-}
+      - ELASTIC_APM_SECRET_TOKEN=${ELASTIC_APM_SECRET_TOKEN:-}
+      # Arize Phoenix (use ARIZE_API_KEY+ARIZE_SPACE_ID for cloud, or PHOENIX_COLLECTOR_ENDPOINT for local)
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://localhost:6006/v1/traces}
+      - ARIZE_API_KEY=${ARIZE_API_KEY:-}
+      - ARIZE_SPACE_ID=${ARIZE_SPACE_ID:-}
+      # Make ground_control importable
+      - PYTHONPATH=/root/mars-scout
     command: >
       bash -c "
         source /opt/ros/humble/setup.bash &&
