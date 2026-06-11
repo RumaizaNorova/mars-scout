@@ -74,7 +74,7 @@ def _build_tracer_provider():
     """
     try:
         from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanExporter, SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     except ImportError as exc:
         raise ImportError(
@@ -101,7 +101,7 @@ def _build_tracer_provider():
 
     exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers)
     provider = TracerProvider()
-    provider.add_span_processor(BatchSpanExporter(exporter))
+    provider.add_span_processor(BatchSpanProcessor(exporter))
     return provider
 
 
