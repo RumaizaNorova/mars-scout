@@ -16,7 +16,7 @@ sleep 15   # give Isaac Sim time to load
 
 # Launch ROS2 nodes
 echo "[2/3] Launching ROS2 agent nodes..."
-ros2 launch rover_bringup rover.launch.py \
+ros2 launch mars_scout_bringup full.launch.py \
     target_description:="$TARGET" &
 ROS_PID=$!
 

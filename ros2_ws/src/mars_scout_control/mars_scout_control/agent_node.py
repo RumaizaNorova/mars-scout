@@ -27,8 +27,9 @@ from nav_msgs.msg import Odometry
 from mars_scout_msgs.action import NavigateToTarget
 from mars_scout_msgs.msg    import TerrainTarget, RoverState
 
-from mars_scout_control.fsm        import AgentFSM, FSMConfig, State
-from mars_scout_control.controller import PurePursuitController, ControllerConfig
+from mars_scout_control.fsm          import AgentFSM, FSMConfig, State
+from mars_scout_control.controller   import PurePursuitController, ControllerConfig
+from mars_scout_control.dstar_planner import DStarLitePlanner
 
 # ── Ground control telemetry (optional — disabled if env vars not set) ─────────
 try:
@@ -51,9 +52,18 @@ class AgentNode(Node):
 
         cb_group = ReentrantCallbackGroup()
 
+        # ── Parameters ────────────────────────────────────────────────────────
+        self.declare_parameter("terrain_width_m", 40.0)
+        self.declare_parameter("terrain_depth_m", 40.0)
+        self.declare_parameter("use_dstar", True)
+        terrain_w = self.get_parameter("terrain_width_m").value
+        terrain_d = self.get_parameter("terrain_depth_m").value
+        self._use_dstar: bool = self.get_parameter("use_dstar").value
+
         # ── State ─────────────────────────────────────────────────────────────
         self._fsm        = AgentFSM()
         self._controller = PurePursuitController()
+        self._dstar      = DStarLitePlanner(terrain_w, terrain_d)
         self._goal_handle: ServerGoalHandle | None = None
         self._tick:        int = 0
         self._mission_id:  str | None = None
@@ -64,9 +74,12 @@ class AgentNode(Node):
         self._rover_y:   float = 0.0
         self._rover_yaw: float = 0.0
 
-        # Latest 3-D waypoint from geometry node
+        # Latest 3-D waypoint from geometry node (VLM goal)
         self._goal_x:    float = float("nan")
         self._goal_y:    float = float("nan")
+        # D* Lite planned waypoint (intermediate target for Pure Pursuit)
+        self._planned_wp_x: float = float("nan")
+        self._planned_wp_y: float = float("nan")
         self._latest_target: TerrainTarget | None = None
 
         # ── Action server ─────────────────────────────────────────────────────
@@ -293,8 +306,15 @@ class AgentNode(Node):
         self._latest_target = msg
         # Update goal from 3-D waypoint if available
         if msg.target_found and msg.waypoint.header.frame_id:
-            self._goal_x = msg.waypoint.point.x
-            self._goal_y = msg.waypoint.point.y
+            new_x = msg.waypoint.point.x
+            new_y = msg.waypoint.point.y
+            # Only update D* Lite goal when the waypoint changes meaningfully
+            if (math.isnan(self._goal_x)
+                    or math.hypot(new_x - self._goal_x, new_y - self._goal_y) > 0.3):
+                self._goal_x = new_x
+                self._goal_y = new_y
+                if self._use_dstar:
+                    self._dstar.set_goal(new_x, new_y)
 
     def _cb_odom(self, msg: Odometry):
         self._rover_x = msg.pose.pose.position.x
@@ -315,9 +335,20 @@ class AgentNode(Node):
 
         elif state in (State.APPROACHING, State.VERIFYING):
             if not math.isnan(self._goal_x):
+                # D* Lite: get collision-free intermediate waypoint
+                wp_x, wp_y = self._goal_x, self._goal_y
+                if self._use_dstar:
+                    wp = self._dstar.next_waypoint(
+                        self._rover_x, self._rover_y, lookahead_m=2.0
+                    )
+                    if wp is not None:
+                        wp_x, wp_y = wp
+                    # If D* Lite has no path, fall back to direct waypoint
+                self._planned_wp_x, self._planned_wp_y = wp_x, wp_y
+
                 out = self._controller.compute(
                     self._rover_x, self._rover_y, self._rover_yaw,
-                    self._goal_x,  self._goal_y,
+                    wp_x, wp_y,
                 )
                 cmd.linear.x  = out.linear
                 cmd.angular.z = out.angular

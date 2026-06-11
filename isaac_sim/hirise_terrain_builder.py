@@ -3847,11 +3847,11 @@ def build_mars_scene(
         materials, rng,
         rock_material=rock_vc_mat,
     )
-    counts = {cls: 0 for cls, *_ in _ROCK_SIZE_CLASSES}
+    counts = {name: 0 for _, _, name, _ in _ROCK_SIZE_BINS}
     for p in rock_paths:
-        for cls, *_ in _ROCK_SIZE_CLASSES:
-            if f"/{cls}_" in p:
-                counts[cls] += 1
+        for _, _, name, _ in _ROCK_SIZE_BINS:
+            if f"/{name}_" in p:
+                counts[name] += 1
     n_vent = int(len(rock_paths) * _VENTIFACT_PROB)
     print(f"[hirise_terrain] Placed {len(rock_paths)} rocks "
           f"({counts.get('boulder',0)} boulders, "
