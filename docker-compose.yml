@@ -70,11 +70,11 @@ services:
       - ROS_DOMAIN_ID=42
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:?GOOGLE_API_KEY must be set on the host}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
       # MongoDB Atlas
-      - MONGODB_URI=${MONGODB_URI:?MONGODB_URI must be set}
+      - MONGODB_URI=${MONGODB_URI:-}
       # Elasticsearch
-      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:?ELASTICSEARCH_URL must be set}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-}
       - ELASTICSEARCH_API_KEY=${ELASTICSEARCH_API_KEY:-}
       # Elastic APM (optional)
       - ELASTIC_APM_SERVER_URL=${ELASTIC_APM_SERVER_URL:-}

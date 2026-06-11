@@ -11,7 +11,8 @@
 # =============================================================================
 
 set -e
-DATA_DIR="$HOME/mars-rover-agent/data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATA_DIR="$(dirname "$SCRIPT_DIR")/data"
 OUTPUT="$DATA_DIR/jezero_hirise.tif"
 
 mkdir -p "$DATA_DIR"
