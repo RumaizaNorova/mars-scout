@@ -117,7 +117,7 @@ def _synth_image(
         img[r, :, 2] = int(115 + frac * 55)
 
     # Terrain texture (seeded per scene for variety)
-    np_rng = np.random.default_rng(seed ^ int(rover_x * 100) ^ int(rover_y * 100))
+    np_rng = np.random.default_rng(abs(seed ^ int(rover_x * 100) ^ int(rover_y * 100)))
     for scale, amp in [(32, 30), (16, 15), (8, 8)]:
         nh, nw = H // scale + 2, W // scale + 2
         noise  = np_rng.integers(0, 255, (nh, nw), dtype=np.uint8)
