@@ -380,7 +380,9 @@ def main():
                   f"det={result.n_detections:3d} fp={result.n_fp}  "
                   f"'{result.query_text[:35]}'")
         except Exception as exc:
+            import traceback
             print(f"  [{i+1:3d}/{args.n_missions}] ERROR: {exc}")
+            traceback.print_exc()
             continue
 
     elapsed_total = time.perf_counter() - t_start

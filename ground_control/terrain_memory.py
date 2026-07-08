@@ -65,12 +65,8 @@ def _get_client():
             "pymongo is required. Install it: pip install 'pymongo[srv]'"
         ) from exc
 
-    try:
-        import certifi
-        tls_kwargs = {"tlsCAFile": certifi.where()}
-    except ImportError:
-        tls_kwargs = {}
-    client = MongoClient(uri, serverSelectionTimeoutMS=10_000, **tls_kwargs)
+    import certifi
+    client = MongoClient(uri, serverSelectionTimeoutMS=10_000, tlsCAFile=certifi.where(), tlsAllowInvalidCertificates=False)
     # Force a real connection attempt — fail loud if unreachable
     try:
         client.admin.command("ping")

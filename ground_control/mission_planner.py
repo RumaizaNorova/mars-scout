@@ -114,7 +114,7 @@ class MissionPlanner:
             # Use 1.2× the average elapsed time of similar missions as timeout hint
             elapsed_vals = [m["elapsed_sec"] for m in similar if m.get("elapsed_sec")]
             if elapsed_vals:
-                timeout_hint = min(300.0, max(60.0, 1.2 * sum(elapsed_vals) / len(elapsed_vals)))
+                timeout_hint = min(300.0, max(90.0, 1.2 * sum(elapsed_vals) / len(elapsed_vals)))
 
         # 3. Adaptive confidence threshold
         rec_conf = self._qual.get_recommended_confidence(query_text)
