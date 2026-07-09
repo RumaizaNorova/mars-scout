@@ -1,29 +1,31 @@
 #!/bin/bash
-# Run this once on the fresh Vast.ai instance to install everything.
+# Run this once on a fresh Ubuntu 24.04 GPU instance (AWS g5, Vast.ai A10G, etc.)
 set -e
 
 echo "=== [1/5] System packages ==="
 apt-get update -qq
 apt-get install -y \
     git curl wget python3-pip \
-    libgl1-mesa-glx libglib2.0-0 \
-    x11vnc xvfb novnc \
+    libgl1-mesa-dri libglib2.0-0 \
+    x11vnc xvfb novnc websockify \
     --no-install-recommends
 
-echo "=== [2/5] ROS2 Humble ==="
-if [ ! -f /opt/ros/humble/setup.bash ]; then
+echo "=== [2/5] ROS2 Jazzy ==="
+if [ ! -f /opt/ros/jazzy/setup.bash ]; then
     curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-        -o /usr/share/keyrings/ros-archive-keyring.gpg
+        | gpg --dearmor \
+        | tee /usr/share/keyrings/ros-archive-keyring.gpg > /dev/null
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
         http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
-        > /etc/apt/sources.list.d/ros2.list
+        | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+    chmod 644 /etc/apt/sources.list.d/ros2.list /usr/share/keyrings/ros-archive-keyring.gpg
     apt-get update -qq
-    apt-get install -y ros-humble-desktop ros-humble-cv-bridge python3-colcon-common-extensions
+    apt-get install -y ros-jazzy-desktop ros-jazzy-cv-bridge python3-colcon-common-extensions
 fi
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 
 echo "=== [3/5] Python deps ==="
-pip install -r /root/mars-rover-agent/requirements.txt
+pip install -r /root/mars-rover-agent/requirements.txt --break-system-packages
 
 echo "=== [4/5] Build ROS2 workspace ==="
 cd /root/mars-rover-agent/ros2_ws
