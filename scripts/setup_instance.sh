@@ -25,10 +25,11 @@ fi
 source /opt/ros/jazzy/setup.bash
 
 echo "=== [3/5] Python deps ==="
-pip install -r /root/mars-rover-agent/requirements.txt --break-system-packages
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+pip install -r "$REPO_DIR/requirements.txt" --break-system-packages
 
 echo "=== [4/5] Build ROS2 workspace ==="
-cd /root/mars-rover-agent/ros2_ws
+cd "$REPO_DIR/ros2_ws"
 colcon build --symlink-install
 source install/setup.bash
 
