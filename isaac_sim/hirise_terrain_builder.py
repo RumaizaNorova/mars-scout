@@ -2548,9 +2548,12 @@ def _place_rocks(
             pitch = rng.uniform(-8.0,   8.0)
             roll  = rng.uniform(-8.0,   8.0)
 
+            # Embed rock into regolith: 50% of diameter buried (Golombek 2008)
+            z_embedded = max(z_terrain - diam_m * 0.5, 0.0)
+
             # Transform: translate → yaw → pitch/roll
             xf = UsdGeom.Xformable(stage.GetPrimAtPath(prim_path))
-            xf.AddTranslateOp().Set(Gf.Vec3d(x, y, z_terrain))
+            xf.AddTranslateOp().Set(Gf.Vec3d(x, y, z_embedded))
             xf.AddRotateZOp().Set(yaw)
             xf.AddRotateXOp().Set(pitch)
             xf.AddRotateYOp().Set(roll)
