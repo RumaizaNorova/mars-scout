@@ -3776,21 +3776,24 @@ def build_mars_scene(
         print(f"[hirise_terrain] Procedural DTM: "
               f"amplitude {terrain_amplitude}m, {terrain_nx}×{terrain_ny} verts")
 
-    # ── 2b. Aeolian ripple deformation ────────────────────────────────────────
-    # Baked into elevation BEFORE mesh build so geometry is physically correct.
-    # λ = 2.1 m (Lapôtre 2016 ground truth), h = 0.125 m, transport 276° WSW
-    elevation = _add_aeolian_ripples(elevation, terrain_width, terrain_depth)
-    print("[hirise_terrain] Aeolian ripples added "
-          "(λ=2.1 m, h=0.125 m, 276° WSW transport — Lapôtre 2016)")
+    # ── 2b. Synthetic terrain features (procedural only) ───────────────────────
+    # Real HiRISE DTM already encodes ripples, craters, roughness.
+    # Only add synthetic features if using procedural fallback.
+    crater_list: Optional[list] = None
+    if hirise_dtm_path is None:
+        # Aeolian ripple deformation: λ=2.1m (Lapôtre 2016), h=0.125m, 276° WSW
+        elevation = _add_aeolian_ripples(elevation, terrain_width, terrain_depth)
+        print("[hirise_terrain] Aeolian ripples added "
+              "(λ=2.1 m, h=0.125 m, 276° WSW transport — Lapôtre 2016)")
 
-    # ── 2c. Impact craters ────────────────────────────────────────────────────
-    # Stamped AFTER ripples: craters post-date the aeolian bedform (geologically
-    # more recent impact events truncate older ripple topography).
-    # Density: 0.005 fresh craters (D>0.5 m) per m², Golombek 2014 InSight data.
-    elevation, crater_list = _add_impact_craters(
-        elevation, terrain_width, terrain_depth,
-        min_radius_m=0.4, max_radius_m=min(4.0, terrain_width * 0.10),
-    )
+        # Impact craters: 0.005 per m² density (Golombek 2014 InSight)
+        elevation, crater_list = _add_impact_craters(
+            elevation, terrain_width, terrain_depth,
+            min_radius_m=0.4, max_radius_m=min(4.0, terrain_width * 0.10),
+        )
+        print("[hirise_terrain] Impact craters added (density 0.005/m²)")
+    else:
+        print("[hirise_terrain] Real HiRISE in use; skipping synthetic ripples/craters")
 
     # ── 2d. Wheel track deformation (Bekker 1956 + Golombek 2018) ────────────
     # Applied AFTER craters: tracks are the most recent feature (present-day).
