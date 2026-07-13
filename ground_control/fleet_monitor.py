@@ -79,18 +79,19 @@ IDX_MISSIONS = "rover-missions"
 _OBS_MAPPING = {
     "mappings": {
         "properties": {
-            "mission_id":       {"type": "keyword"},
-            "seq":              {"type": "integer"},
-            "timestamp":        {"type": "date"},
-            "fsm_state":        {"type": "keyword"},
-            "query_text":       {"type": "text",    "fields": {"kw": {"type": "keyword"}}},
-            "target_found":     {"type": "boolean"},
-            "confidence":       {"type": "float"},
-            "description":      {"type": "text"},
-            "distance_to_goal_m": {"type": "float"},
-            "rover_position":   {"type": "geo_point"},
-            "inference_ms":     {"type": "float"},
-            "vlm_backend":      {"type": "keyword"},
+            "mission_id":          {"type": "keyword"},
+            "seq":                 {"type": "integer"},
+            "timestamp":           {"type": "date"},
+            "fsm_state":           {"type": "keyword"},
+            "query_text":          {"type": "text", "fields": {"kw": {"type": "keyword"}}},
+            "target_found":        {"type": "boolean"},
+            "confidence":          {"type": "float"},
+            "description":         {"type": "text"},
+            "distance_to_goal_m":  {"type": "float"},
+            "rover_position":      {"type": "geo_point"},
+            "inference_ms":        {"type": "float"},
+            "vlm_backend":         {"type": "keyword"},
+            "knn_similarity_score":{"type": "float"},   # cosine similarity of terrain memory KNN match
             "description_embedding": {
                 "type":       "dense_vector",
                 "dims":       DIM,
@@ -104,13 +105,16 @@ _OBS_MAPPING = {
 _FEAT_MAPPING = {
     "mappings": {
         "properties": {
-            "mission_id":    {"type": "keyword"},
-            "feature_type":  {"type": "keyword"},
-            "location":      {"type": "geo_point"},
-            "description":   {"type": "text"},
-            "confidence":    {"type": "float"},
-            "detected_at":   {"type": "date"},
-            "observation_count": {"type": "integer"},
+            "mission_id":       {"type": "keyword"},
+            "feature_type":     {"type": "keyword"},
+            "feature_class":    {"type": "keyword"},    # boulder / cobble / ripple / crater / outcrop
+            "geological_unit":  {"type": "keyword"},    # maaz / seitah / delta_front / jezero_floor
+            "location":         {"type": "geo_point"},
+            "description":      {"type": "text"},
+            "confidence":       {"type": "float"},
+            "detected_at":      {"type": "date"},
+            "discovered_at":    {"type": "date"},       # alias for Kibana time filter
+            "observation_count":{"type": "integer"},
             "description_embedding": {
                 "type":       "dense_vector",
                 "dims":       DIM,
@@ -124,21 +128,29 @@ _FEAT_MAPPING = {
 _MISSION_MAPPING = {
     "mappings": {
         "properties": {
-            "mission_id":       {"type": "keyword"},
-            "query_text":       {"type": "text",  "fields": {"kw": {"type": "keyword"}}},
-            "terrain_unit":     {"type": "keyword"},
-            "outcome":          {"type": "keyword"},
-            "elapsed_sec":      {"type": "float"},
-            "n_observations":   {"type": "integer"},
-            "n_detections":     {"type": "integer"},
-            "n_false_positives":{"type": "integer"},
-            "started_at":       {"type": "date"},
-            "completed_at":     {"type": "date"},
-            "start_position":   {"type": "geo_point"},
-            "final_position":   {"type": "geo_point"},
-            "vlm_backend":      {"type": "keyword"},
-            "precision":        {"type": "float"},
-            "hallucination_score": {"type": "float"},
+            "mission_id":               {"type": "keyword"},
+            "query_text":               {"type": "text",  "fields": {"kw": {"type": "keyword"}}},
+            "terrain_unit":             {"type": "keyword"},
+            "outcome":                  {"type": "keyword"},
+            # dashboard aliases
+            "success":                  {"type": "boolean"},       # outcome == "success"
+            "duration_sec":             {"type": "float"},         # alias for elapsed_sec
+            "end_time":                 {"type": "date"},          # alias for completed_at
+            "path_efficiency":          {"type": "float"},         # actual_dist / straight_line_dist
+            "final_distance_to_goal_m": {"type": "float"},         # metres at mission end
+            "false_positive_rate":      {"type": "float"},         # n_false_positives / n_detections
+            # core fields
+            "elapsed_sec":              {"type": "float"},
+            "n_observations":           {"type": "integer"},
+            "n_detections":             {"type": "integer"},
+            "n_false_positives":        {"type": "integer"},
+            "started_at":               {"type": "date"},
+            "completed_at":             {"type": "date"},
+            "start_position":           {"type": "geo_point"},
+            "final_position":           {"type": "geo_point"},
+            "vlm_backend":              {"type": "keyword"},
+            "precision":                {"type": "float"},
+            "hallucination_score":      {"type": "float"},
         }
     }
 }
@@ -195,18 +207,19 @@ class FleetMonitor:
         """
         pos = obs.get("rover_position", {})
         doc = {
-            "mission_id":        mission_id,
-            "seq":               obs.get("seq", -1),
-            "timestamp":         _to_iso(obs.get("timestamp")),
-            "fsm_state":         obs.get("fsm_state", ""),
-            "query_text":        obs.get("query_text", ""),
-            "target_found":      bool(obs.get("target_found", False)),
-            "confidence":        float(obs.get("confidence", 0.0)),
-            "description":       obs.get("description", ""),
-            "distance_to_goal_m":float(obs.get("distance_to_goal_m", -1.0)),
-            "rover_position":    f"{pos.get('y', 0.0)},{pos.get('x', 0.0)}",  # lat,lon
-            "inference_ms":      float(obs.get("inference_ms", 0.0)),
-            "vlm_backend":       obs.get("vlm_backend", ""),
+            "mission_id":          mission_id,
+            "seq":                 obs.get("seq", -1),
+            "timestamp":           _to_iso(obs.get("timestamp")),
+            "fsm_state":           obs.get("fsm_state", ""),
+            "query_text":          obs.get("query_text", ""),
+            "target_found":        bool(obs.get("target_found", False)),
+            "confidence":          float(obs.get("confidence", 0.0)),
+            "description":         obs.get("description", ""),
+            "distance_to_goal_m":  float(obs.get("distance_to_goal_m", -1.0)),
+            "rover_position":      f"{pos.get('y', 0.0)},{pos.get('x', 0.0)}",
+            "inference_ms":        float(obs.get("inference_ms", 0.0)),
+            "vlm_backend":         obs.get("vlm_backend", ""),
+            "knn_similarity_score": float(obs.get("knn_similarity_score", 0.0)),
         }
         if embedding is not None:
             doc["description_embedding"] = embedding
@@ -220,13 +233,17 @@ class FleetMonitor:
         feature:    dict,
         embedding:  Optional[list[float]] = None,
     ) -> None:
+        now_iso = _to_iso(datetime.now(timezone.utc))
         doc = {
             "mission_id":        mission_id,
             "feature_type":      feature.get("feature_type", "unknown"),
+            "feature_class":     feature.get("feature_class", feature.get("feature_type", "unknown")),
+            "geological_unit":   feature.get("geological_unit", "unknown"),
             "location":          f"{y},{x}",   # geo_point: lat,lon
             "description":       feature.get("description", ""),
             "confidence":        float(feature.get("confidence", 0.0)),
-            "detected_at":       _to_iso(datetime.now(timezone.utc)),
+            "detected_at":       now_iso,
+            "discovered_at":     now_iso,
             "observation_count": feature.get("observation_count", 1),
         }
         if embedding is not None:
@@ -236,22 +253,42 @@ class FleetMonitor:
     def index_mission_summary(self, mission: dict) -> None:
         sp = mission.get("start_position", {})
         fp = mission.get("final_position",  {})
+        outcome      = mission.get("outcome", "")
+        elapsed_sec  = float(mission.get("elapsed_sec") or 0.0)
+        n_det        = int(mission.get("n_detections", 0))
+        n_fp         = int(mission.get("n_false_positives", 0))
+        fp_rate      = n_fp / n_det if n_det > 0 else 0.0
+        completed_at = mission.get("completed_at")
+
+        # path_efficiency: actual dist / straight-line dist (1.0 = optimal)
+        path_eff = mission.get("path_efficiency")
+        if path_eff is None:
+            actual   = float(mission.get("actual_path_length_m") or 0.0)
+            straight = float(mission.get("straight_line_dist_m") or 0.0)
+            path_eff = actual / straight if straight > 0.5 else 1.0
+
         doc = {
-            "mission_id":        mission.get("mission_id", ""),
-            "query_text":        mission.get("query_text", ""),
-            "terrain_unit":      mission.get("terrain_unit", ""),
-            "outcome":           mission.get("outcome", ""),
-            "elapsed_sec":       float(mission.get("elapsed_sec") or 0.0),
-            "n_observations":    int(mission.get("n_observations", 0)),
-            "n_detections":      int(mission.get("n_detections", 0)),
-            "n_false_positives": int(mission.get("n_false_positives", 0)),
-            "started_at":        _to_iso(mission.get("started_at")),
-            "completed_at":      _to_iso(mission.get("completed_at")),
-            "start_position":    f"{sp.get('y',0)},{sp.get('x',0)}",
-            "final_position":    f"{fp.get('y',0)},{fp.get('x',0)}" if fp else None,
-            "vlm_backend":       mission.get("vlm_backend", ""),
-            "precision":         float(mission.get("precision") or 0.0),
-            "hallucination_score": mission.get("hallucination_score"),
+            "mission_id":               mission.get("mission_id", ""),
+            "query_text":               mission.get("query_text", ""),
+            "terrain_unit":             mission.get("terrain_unit", ""),
+            "outcome":                  outcome,
+            "success":                  outcome == "success",
+            "duration_sec":             elapsed_sec,
+            "end_time":                 _to_iso(completed_at),
+            "path_efficiency":          float(path_eff),
+            "final_distance_to_goal_m": float(mission.get("final_distance_to_goal_m") or 0.0),
+            "false_positive_rate":      fp_rate,
+            "elapsed_sec":              elapsed_sec,
+            "n_observations":           int(mission.get("n_observations", 0)),
+            "n_detections":             n_det,
+            "n_false_positives":        n_fp,
+            "started_at":               _to_iso(mission.get("started_at")),
+            "completed_at":             _to_iso(completed_at),
+            "start_position":           f"{sp.get('y',0)},{sp.get('x',0)}",
+            "final_position":           f"{fp.get('y',0)},{fp.get('x',0)}" if fp else None,
+            "vlm_backend":              mission.get("vlm_backend", ""),
+            "precision":                float(mission.get("precision") or 0.0),
+            "hallucination_score":      mission.get("hallucination_score"),
         }
         self._enqueue(IDX_MISSIONS, doc)
 

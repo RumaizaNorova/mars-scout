@@ -104,7 +104,17 @@ except Exception as _e:
 # =============================================================================
 # 1. Terrain
 # =============================================================================
-_HIRISE_PATH = os.path.expanduser("~/mars-rover-agent/data/jezero_hirise.tif")
+# Resolve HiRISE DTM: prefer path relative to repo root, fall back to home-dir conventions
+_REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HIRISE_PATH = os.path.join(_REPO_ROOT, "data", "jezero_hirise.tif")
+if not os.path.exists(_HIRISE_PATH):
+    for _candidate in [
+        os.path.expanduser("~/mars-rover-agent/data/jezero_hirise.tif"),
+        os.path.expanduser("~/Desktop/mars-rover-agent/data/jezero_hirise.tif"),
+    ]:
+        if os.path.exists(_candidate):
+            _HIRISE_PATH = _candidate
+            break
 terrain_result = build_mars_scene(
     stage,
     terrain_path       = "/World/MarsTerrain",

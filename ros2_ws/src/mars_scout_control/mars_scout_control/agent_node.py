@@ -6,8 +6,8 @@ Wires together AgentFSM + PurePursuitController + odometry + VLM targets.
 
 Action:  mars_scout_msgs/action/NavigateToTarget
 Topics subscribed:
-  /rover/geometry/terrain_target   mars_scout_msgs/TerrainTarget   (3-D waypoints)
-  /rover/odom                      nav_msgs/Odometry
+  /rover/vlm/terrain_target        mars_scout_msgs/TerrainTarget   (from perception_node VLM)
+  /odom                            nav_msgs/Odometry               (from Isaac Sim)
 Topics published:
   /rover/cmd_vel                   geometry_msgs/Twist
   /rover/state                     mars_scout_msgs/RoverState
@@ -95,11 +95,11 @@ class AgentNode(Node):
 
         # ── Subscribers ───────────────────────────────────────────────────────
         self.create_subscription(
-            TerrainTarget, "/rover/geometry/terrain_target",
+            TerrainTarget, "/rover/vlm/terrain_target",
             self._cb_target, 10, callback_group=cb_group,
         )
         self.create_subscription(
-            Odometry, "/rover/odom",
+            Odometry, "/odom",
             self._cb_odom, 10, callback_group=cb_group,
         )
 

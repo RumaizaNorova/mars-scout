@@ -5,7 +5,7 @@ Bridges the camera feed and VLM backend into the ROS2 graph.
 
 Subscribed
 ----------
-/rover/camera/image_raw       sensor_msgs/Image
+/isaac_camera/rgb             sensor_msgs/Image   (from Isaac Sim MastCam)
 /rover/vlm/query              mars_scout_msgs/TerrainQuery   (operator goal)
 
 Published
@@ -56,8 +56,8 @@ class PerceptionNode(Node):
         self._latest_frame = None
 
         # ── Subscribers ───────────────────────────────────────────────────────
-        self.create_subscription(Image,        "/rover/camera/image_raw", self._cb_image, 5)
-        self.create_subscription(TerrainQuery, "/rover/vlm/query",        self._cb_query, 10)
+        self.create_subscription(Image,        "/isaac_camera/rgb", self._cb_image, 5)
+        self.create_subscription(TerrainQuery, "/rover/vlm/query",  self._cb_query, 10)
 
         # ── Publisher ─────────────────────────────────────────────────────────
         self._pub = self.create_publisher(TerrainTarget, "/rover/vlm/terrain_target", 10)

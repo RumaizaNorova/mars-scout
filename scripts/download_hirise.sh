@@ -37,7 +37,7 @@ download_url() {
     local url="$1"
     local label="$2"
     echo "[download_hirise] Trying: $label"
-    if wget --timeout=60 --tries=3 --show-progress -O "$OUTPUT" "$url"; then
+    if curl --connect-timeout 60 --retry 3 --progress-bar -L -o "$OUTPUT" "$url"; then
         echo "[download_hirise] SUCCESS: $(du -sh $OUTPUT | cut -f1) saved to $OUTPUT"
         return 0
     else

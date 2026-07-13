@@ -40,7 +40,7 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
     command: >
       bash -c "
-        source /opt/ros/humble/setup.bash &&
+        source /opt/ros/jazzy/setup.bash &&
         source /root/mars-scout/ros2_ws/install/setup.bash &&
         ros2 launch mars_scout_bringup mock.launch.py
       "
@@ -87,7 +87,7 @@ services:
       - PYTHONPATH=/root/mars-scout
     command: >
       bash -c "
-        source /opt/ros/humble/setup.bash &&
+        source /opt/ros/jazzy/setup.bash &&
         source /root/mars-scout/ros2_ws/install/setup.bash &&
         bash scripts/run_demo.sh 'rock formation'
       "
