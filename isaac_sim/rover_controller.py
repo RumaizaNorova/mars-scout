@@ -52,6 +52,9 @@ class RoverWheelController:
     TRACK_WIDTH   = 2.78     # metres (left-centre to right-centre)
     MAX_WHEEL_VEL = 10.0     # rad/s (~0.5 m/s linear at wheel radius)
     RAMP_RATE     = 2.0      # rad/s² — soft acceleration limit
+    SINKAGE_DRAG  = 0.15     # 15% velocity loss due to soil sinkage (Golombek 2018)
+    SLIP_ONSET    = 0.08     # slip starts if accel > 8% per step (loose regolith threshold)
+    SLIP_RECOVERY = 0.5      # slip decays at 50% per second (friction regains grip)
 
     def __init__(self, stage, rover_result: dict):
         self._stage      = stage
@@ -76,6 +79,10 @@ class RoverWheelController:
         # Current wheel velocities (ramped)
         self._cur_left  = 0.0
         self._cur_right = 0.0
+
+        # Wheel slip state (0=no slip, 1=full slip); decays over time
+        self._slip_left  = 0.0
+        self._slip_right = 0.0
 
         # ROS2
         self._ros_node = None
@@ -131,16 +138,41 @@ class RoverWheelController:
         tgt_left  = max(-self.MAX_WHEEL_VEL, min(self.MAX_WHEEL_VEL, tgt_left))
         tgt_right = max(-self.MAX_WHEEL_VEL, min(self.MAX_WHEEL_VEL, tgt_right))
 
+        # Apply sinkage drag (soil resistance during wheel penetration)
+        drag_factor = 1.0 - self.SINKAGE_DRAG
+        tgt_left  *= drag_factor
+        tgt_right *= drag_factor
+
         # Soft ramp (prevents wheel spin / sudden jerks on Mars soil)
         max_delta = self.RAMP_RATE * dt
         self._cur_left  += max(-max_delta, min(max_delta, tgt_left  - self._cur_left))
         self._cur_right += max(-max_delta, min(max_delta, tgt_right - self._cur_right))
 
+        # Wheel slip model: slip increases if wheel velocity change is large, decays over time
+        slip_onset_threshold = self.SLIP_ONSET * self.MAX_WHEEL_VEL
+        left_accel  = abs((tgt_left  - self._cur_left) / max(dt, 0.001))
+        right_accel = abs((tgt_right - self._cur_right) / max(dt, 0.001))
+
+        # Slip dynamics: onset if accel > threshold, recovery otherwise
+        if left_accel > slip_onset_threshold:
+            self._slip_left = min(1.0, self._slip_left + 0.05)
+        else:
+            self._slip_left *= (1.0 - self.SLIP_RECOVERY * dt)
+
+        if right_accel > slip_onset_threshold:
+            self._slip_right = min(1.0, self._slip_right + 0.05)
+        else:
+            self._slip_right *= (1.0 - self.SLIP_RECOVERY * dt)
+
+        # Apply slip to actual commanded velocities
+        cmd_left  = self._cur_left  * (1.0 - self._slip_left)
+        cmd_right = self._cur_right * (1.0 - self._slip_right)
+
         # Write to USD DriveAPI
         for jp in self._left_joints:
-            self._set_joint_vel(jp, self._cur_left)
+            self._set_joint_vel(jp, cmd_left)
         for jp in self._right_joints:
-            self._set_joint_vel(jp, self._cur_right)
+            self._set_joint_vel(jp, cmd_right)
 
     def _set_joint_vel(self, joint_path: str, vel_rad_s: float) -> None:
         if not _PXR_AVAILABLE:
