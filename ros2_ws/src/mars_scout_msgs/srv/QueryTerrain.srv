@@ -1,0 +1,13 @@
+# One-shot service: send a query, get back the best target the VLM can find
+# right now (uses the latest camera frame).
+
+# ── Request ───────────────────────────────────────────────────────────────────
+string query_text
+float32 min_confidence   # reject targets below this threshold (0 = accept all)
+
+---
+
+# ── Response ──────────────────────────────────────────────────────────────────
+mars_scout_msgs/TerrainTarget target
+bool   success
+string message           # human-readable status / error

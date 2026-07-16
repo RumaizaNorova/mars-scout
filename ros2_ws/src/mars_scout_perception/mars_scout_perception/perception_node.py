@@ -1,0 +1,160 @@
+"""
+mars_scout_perception — PerceptionNode
+
+Bridges the camera feed and VLM backend into the ROS2 graph.
+
+Subscribed
+----------
+/isaac_camera/rgb             sensor_msgs/Image   (from Isaac Sim MastCam)
+/rover/vlm/query              mars_scout_msgs/TerrainQuery   (operator goal)
+
+Published
+---------
+/rover/vlm/terrain_target     mars_scout_msgs/TerrainTarget
+
+Parameters
+----------
+backend          : "mock" | "moondream2" | "gemini"   (default: "mock")
+inference_rate_hz: float                   max VLM calls per second (default: 2.0)
+min_confidence   : float                   suppress targets below this (default: 0.4)
+"""
+
+from __future__ import annotations
+import uuid
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+
+from mars_scout_msgs.msg import TerrainQuery, TerrainTarget
+from mars_scout_perception.vlm_backend   import VLMResult, BoundingBox
+from mars_scout_perception.mock_vlm_backend import MockVLMBackend
+
+
+class PerceptionNode(Node):
+
+    def __init__(self):
+        super().__init__("perception_node")
+
+        # ── Parameters ────────────────────────────────────────────────────────
+        self.declare_parameter("backend",           "mock")
+        self.declare_parameter("inference_rate_hz", 2.0)
+        self.declare_parameter("min_confidence",    0.4)
+        self.declare_parameter("default_query",     "rock formation")
+
+        backend_name = self.get_parameter("backend").value
+        rate_hz      = self.get_parameter("inference_rate_hz").value
+        self._min_conf  = self.get_parameter("min_confidence").value
+        self._query     = self.get_parameter("default_query").value
+        self._query_id  = str(uuid.uuid4())[:8]
+
+        # ── VLM backend ───────────────────────────────────────────────────────
+        self._vlm = self._build_backend(backend_name)
+        self.get_logger().info(f"VLM backend: {self._vlm.name}")
+
+        # ── State ─────────────────────────────────────────────────────────────
+        self._latest_frame = None
+
+        # ── Subscribers ───────────────────────────────────────────────────────
+        self.create_subscription(Image,        "/isaac_camera/rgb", self._cb_image, 5)
+        self.create_subscription(TerrainQuery, "/rover/vlm/query",  self._cb_query, 10)
+
+        # ── Publisher ─────────────────────────────────────────────────────────
+        self._pub = self.create_publisher(TerrainTarget, "/rover/vlm/terrain_target", 10)
+
+        # ── Inference timer ───────────────────────────────────────────────────
+        self.create_timer(1.0 / rate_hz, self._run_inference)
+
+        self.get_logger().info(
+            f"PerceptionNode ready  backend={self._vlm.name}  "
+            f"rate={rate_hz}Hz  query='{self._query}'"
+        )
+
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _cb_image(self, msg: Image):
+        self._latest_frame = msg
+
+    def _cb_query(self, msg: TerrainQuery):
+        self._query    = msg.query_text
+        self._query_id = msg.query_id or str(uuid.uuid4())[:8]
+        self.get_logger().info(f"New query: '{self._query}' (id={self._query_id})")
+
+    def _run_inference(self):
+        if self._latest_frame is None:
+            return
+
+        bgr = self._ros_image_to_bgr(self._latest_frame)
+        result: VLMResult = self._vlm.query(bgr, self._query)
+
+        msg = self._result_to_msg(result, self._latest_frame.header)
+        self._pub.publish(msg)
+
+        self.get_logger().info(
+            f"[{self._vlm.name}] found={result.target_found}  "
+            f"conf={result.confidence:.2f}  {result.inference_ms:.0f}ms  "
+            f"'{result.description[:60]}'"
+        )
+
+    # ── Image conversion (no cv_bridge — works with any numpy version) ────────
+
+    @staticmethod
+    def _ros_image_to_bgr(msg: Image) -> np.ndarray:
+        """Convert a sensor_msgs/Image to a (H,W,3) BGR uint8 numpy array."""
+        arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+            (msg.height, msg.width, -1)
+        )
+        if msg.encoding.lower() == "rgb8":
+            arr = arr[:, :, ::-1].copy()
+        return arr
+
+    # ── Conversion ────────────────────────────────────────────────────────────
+
+    def _result_to_msg(self, result: VLMResult, header) -> TerrainTarget:
+        msg = TerrainTarget()
+        msg.header       = header
+        msg.query_id     = self._query_id
+        msg.target_found = result.target_found
+        msg.vlm_description = result.description
+        msg.vlm_confidence  = float(result.confidence)
+        msg.depth_confidence  = 0.0
+        msg.overall_confidence = float(result.confidence)
+
+        if result.target_found and result.bbox is not None:
+            msg.bbox_cx = float(result.bbox.cx)
+            msg.bbox_cy = float(result.bbox.cy)
+            msg.bbox_w  = float(result.bbox.w)
+            msg.bbox_h  = float(result.bbox.h)
+
+        return msg
+
+    # ── Backend factory ───────────────────────────────────────────────────────
+
+    def _build_backend(self, name: str):
+        if name == "mock":
+            return MockVLMBackend(
+                min_confidence=self.get_parameter("min_confidence").value
+            )
+        elif name == "moondream2":
+            from mars_scout_perception.vlm_backend import Moondream2Backend
+            return Moondream2Backend()
+        elif name == "gemini":
+            from mars_scout_perception.vlm_backend import GeminiVisionBackend
+            return GeminiVisionBackend()
+        else:
+            raise RuntimeError(
+                f"Unknown VLM backend '{name}'. "
+                f"Valid options: 'mock', 'moondream2', 'gemini'."
+            )
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PerceptionNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

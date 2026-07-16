@@ -1,0 +1,161 @@
+version: "3.9"
+
+# ── Mars Scout — Docker Compose ───────────────────────────────────────────────
+#
+# Services
+# --------
+# mock     Mac / CPU dev — full mock pipeline, no GPU needed
+#          docker compose up mock
+#
+# gpu      Vast.ai / Lambda GPU host — full Isaac Sim + Gemini Vision stack
+#          GOOGLE_API_KEY=<key> docker compose up gpu
+#
+# test     Run the full test suite and exit
+#          docker compose run --rm test
+#
+# Required env vars (on the host before running)
+# -----------------------------------------------
+#   GOOGLE_API_KEY   — Google AI Studio key for Gemini Vision backend
+#                      The perception node raises at startup if this is unset.
+
+services:
+
+  # ── Mock pipeline (Mac-friendly, no GPU) ─────────────────────────────────
+  mock:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: mars-scout:dev
+    network_mode: host
+    stdin_open: true
+    tty: true
+    volumes:
+      # Mount source so code changes are reflected without rebuild
+      - ./ros2_ws/src:/root/mars-scout/ros2_ws/src
+      # Persist Mars imagery download between runs
+      - mars_images:/root/mars-scout/ros2_ws/src/mars_scout_mock/data
+    environment:
+      - ROS_DOMAIN_ID=42
+      # Optional: set GOOGLE_API_KEY if you want to test gemini backend locally
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    command: >
+      bash -c "
+        source /opt/ros/jazzy/setup.bash &&
+        source /root/mars-scout/ros2_ws/install/setup.bash &&
+        ros2 launch mars_scout_bringup mock.launch.py
+      "
+
+  # ── Full GPU stack (Vast.ai / Lambda) ────────────────────────────────────
+  gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mars-scout:gpu
+    network_mode: host
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./ros2_ws/src:/root/mars-scout/ros2_ws/src
+      - mars_images:/root/mars-scout/ros2_ws/src/mars_scout_mock/data
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      - DISPLAY=${DISPLAY:-:1}
+      - ROS_DOMAIN_ID=42
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      # MongoDB Atlas
+      - MONGODB_URI=${MONGODB_URI:-}
+      # Elasticsearch
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-}
+      - ELASTICSEARCH_API_KEY=${ELASTICSEARCH_API_KEY:-}
+      # Elastic APM (optional)
+      - ELASTIC_APM_SERVER_URL=${ELASTIC_APM_SERVER_URL:-}
+      - ELASTIC_APM_SECRET_TOKEN=${ELASTIC_APM_SECRET_TOKEN:-}
+      # Arize Phoenix (use ARIZE_API_KEY+ARIZE_SPACE_ID for cloud, or PHOENIX_COLLECTOR_ENDPOINT for local)
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://localhost:6006/v1/traces}
+      - ARIZE_API_KEY=${ARIZE_API_KEY:-}
+      - ARIZE_SPACE_ID=${ARIZE_SPACE_ID:-}
+      # Make ground_control importable
+      - PYTHONPATH=/root/mars-scout
+    command: >
+      bash -c "
+        source /opt/ros/jazzy/setup.bash &&
+        source /root/mars-scout/ros2_ws/install/setup.bash &&
+        bash scripts/run_demo.sh 'rock formation'
+      "
+
+  # ── Test runner ───────────────────────────────────────────────────────────
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: mars-scout:dev
+    command: >
+      bash -c "
+        pip install pytest pytest-cov -q &&
+        python3 -m pytest
+          ros2_ws/src/mars_scout_geometry/test/
+          ros2_ws/src/mars_scout_mock/test/
+          ros2_ws/src/mars_scout_perception/test/
+          ros2_ws/src/mars_scout_control/test/
+          -v --tb=short
+      "
+
+  # ── Local telemetry stack (no cloud accounts needed for dev) ─────────────
+  #
+  # Start with:  docker compose up elasticsearch kibana phoenix -d
+  # Then run:    python scripts/batch_mission_runner.py
+  #
+  # Kibana UI:   http://localhost:5601
+  # Phoenix UI:  http://localhost:6006
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+      - "4317:4317"   # OTLP gRPC
+    environment:
+      - PHOENIX_WORKING_DIR=/mnt/data
+    volumes:
+      - phoenix_data:/mnt/data
+
+volumes:
+  mars_images:
+  es_data:
+  phoenix_data:

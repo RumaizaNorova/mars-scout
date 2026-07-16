@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mars_scout_mock</name>
+  <version>0.1.0</version>
+  <description>
+    Topic-perfect Isaac Sim substitute for Mars Scout.
+    Publishes real Mars imagery as camera + synthesised depth + TF,
+    and integrates a differential-drive kinematic model from cmd_vel.
+    Runs on any machine — no GPU, no Isaac Sim required.
+  </description>
+  <maintainer email="norova@ualberta.ca">Ruma</maintainer>
+  <license>MIT</license>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <export><build_type>ament_python</build_type></export>
+  <test_depend>pytest</test_depend>
+</package>

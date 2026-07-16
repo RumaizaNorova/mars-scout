@@ -1,0 +1,26 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.vscode/
+.env
+.env.local
+.env.*.local
+
+# ROS / colcon
+build/
+install/
+log/
+*.bag
+*.db3
+
+# Bags / outputs
+bags/
+outputs/
+
+# Internal planning / notes (keep repo clean)
+docs/PROJECT_MASTER_PLAN.md
+docs/internal/
+docs/*_internal.md
+/data/jezero_hirise.tif

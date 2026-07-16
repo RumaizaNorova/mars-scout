@@ -1,0 +1,315 @@
+// hapke_regolith.mdl
+// ──────────────────────────────────────────────────────────────────────────────
+// Hapke (2002) photometric BRDF for Mars basaltic regolith.
+//
+// Physical model
+// ──────────────
+// The full Hapke reflectance equation (Hapke 2002, Icarus 157:523):
+//
+//   r(i, e, g) = (w₀/4π) × [μ₀/(μ₀+μ)] × [p(g)·B(g) + H(μ₀)H(μ) − 1]
+//
+// where:
+//   i, e     = incidence and emission angles
+//   g        = phase angle (Sun–surface–camera)
+//   μ₀       = cos(i),  μ = cos(e)
+//   w₀       = single-scattering albedo  (Bell 2004: w₀ ≈ 0.32 dark soil)
+//   p(g)     = Henyey–Greenstein phase function, asymmetry g=0.68 (Madeleine 2012)
+//   B(g)     = opposition surge: B₀ / (1 + (1/h)·tan(g/2))  (Hapke 2002)
+//   H(x,w₀) = Chandrasekhar H-function ≈ (1+2x)/(1+2x√(1−w₀))
+//
+// MDL implementation strategy
+// ────────────────────────────
+// MDL does not expose raw directional integrals — BSDFs are sampled by the
+// path-tracer and directions are implicit.  We map each Hapke term to the
+// nearest available MDL BSDF primitive:
+//
+//   Lommel–Seeliger μ₀/(μ₀+μ) (limb effect):
+//     → df::directional_factor(normal_tint, grazing_tint, exponent=1)
+//       normal_tint ≈ μ₀/(μ₀+1), grazing_tint ≈ 1.0
+//       This matches the emission-angle dependence at fixed incidence μ₀.
+//
+//   HG phase p(g), g=0.68 (forward scatter):
+//     → df::simple_glossy_bsdf(roughness=hg_roughness_mdl, scatter_reflect)
+//       HG g → MDL Beckmann α:  α ≈ (1−g)·√2 / (1+g) = 0.269 for g=0.68
+//       BUT: df::simple_glossy peaks at specular (retroreflective), so we
+//       combine it with the diffuse base to approximate the HG shape.
+//
+//   Opposition surge B(g), peak at g=0:
+//     → df::backscattering_glossy_reflection_bsdf(roughness=opp_width_mdl)
+//       Opposition half-width h=0.06 rad → MDL retro roughness ≈ 0.06/0.3 = 0.20
+//
+//   H(μ₀)H(μ) − 1 multiple-scattering term:
+//     → df::diffuse_reflection_bsdf(tint = albedo × h_correction)
+//       h_correction = H²(0.5, w₀) ≈ 1.47 for w₀=0.32
+//
+// References
+// ──────────
+//   Hapke 1981, JGR 86(B4):3039           — original photometric model
+//   Hapke 2002, Icarus 157:523             — porosity + revised H-function
+//   Madeleine 2012, Icarus 213:225         — Mars dust HG g=0.68
+//   Bell 2004, Science 305:800             — ferric dust w₀ and albedo
+//   Golombek 2008, JGR 113:E00A11         — macroscopic roughness θ̄=20°
+//   Hayes et al. 2021, SSR 217:48          — Mastcam-Z radiometric calibration
+//   Cord et al. 2003, Icarus 165:414       — Hapke parameter fits for Mars analog
+// ──────────────────────────────────────────────────────────────────────────────
+
+mdl 1.6;
+
+import ::anno::*;
+import ::base::*;
+import ::df::*;
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+
+
+// ── helper: Chandrasekhar H-function approximation ───────────────────────────
+// H(x, w₀) ≈ (1+2x) / (1+2x·√(1−w₀))
+// Exact to within 1% for w₀ ∈ [0, 1] (Hapke 1981 Eq. 8).
+float hapke_H(float x, float w0) {
+    float sqrt_term = math::sqrt(math::max(1.0 - w0, 0.0));
+    return (1.0 + 2.0 * x) / (1.0 + 2.0 * x * sqrt_term);
+}
+
+
+// ── main material export ──────────────────────────────────────────────────────
+
+export material hapke_regolith(
+
+    // ── Photometric parameters ────────────────────────────────────────────────
+    uniform float single_scatter_albedo = 0.32
+    [[  anno::display_name("Single-Scatter Albedo w₀"),
+        anno::hard_range(0.001, 0.999),
+        anno::description(
+            "Hapke w₀: fraction of intercepted photons scattered (not absorbed). "
+            "Mars dark basaltic soil: 0.22–0.42 (Bell 2004 Science 305:800). "
+            "Bright ferric dust patches: up to 0.60.") ]],
+
+    uniform float hg_asymmetry = 0.68
+    [[  anno::display_name("HG Phase Asymmetry g"),
+        anno::hard_range(-0.99, 0.99),
+        anno::description(
+            "Henyey–Greenstein asymmetry: g>0 = forward scatter, g<0 = backscatter. "
+            "Mars atmospheric dust: g=0.68 (Madeleine 2012 Icarus 213:225). "
+            "Mars surface regolith single particles: g≈0.55–0.75.") ]],
+
+    uniform float opposition_amplitude = 0.80
+    [[  anno::display_name("Opposition Amplitude B₀"),
+        anno::hard_range(0.0, 2.5),
+        anno::description(
+            "Hapke B₀: peak brightness enhancement above diffuse background at g=0. "
+            "Mars soil analog (JSC Mars-1): B₀≈0.8 (Hapke 2002 Icarus 157:523). "
+            "Can exceed 1.0 for highly coherent-backscatter media.") ]],
+
+    uniform float opposition_width = 0.06
+    [[  anno::display_name("Opposition Half-Width h  [rad]"),
+        anno::hard_range(0.001, 0.5),
+        anno::description(
+            "Hapke h: angular half-width of opposition surge [radians]. "
+            "Mars soil: h≈0.06 rad = 3.4° (Hapke 2002). "
+            "Smaller h = narrower, sharper opposition spike.") ]],
+
+    uniform float macro_roughness_deg = 20.0
+    [[  anno::display_name("Macroscopic Roughness θ̄  [°]"),
+        anno::hard_range(0.0, 45.0),
+        anno::description(
+            "Hapke θ̄: RMS slope of cm-scale surface facets. "
+            "Mars regolith: θ̄=18–22° (Golombek 2008 JGR 113:E00A11). "
+            "Modulates roughness texture from smooth (0°) to very rough (45°).") ]],
+
+    uniform float sun_elevation_deg = 45.0
+    [[  anno::display_name("Solar Elevation Angle  [°]"),
+        anno::hard_range(5.0, 90.0),
+        anno::description(
+            "Solar elevation above horizon in degrees. Affects the Lommel–Seeliger "
+            "limb-darkening coefficient μ₀=cos(90°−elevation). "
+            "Mars Jezero: 45–65° at noon (Haberle 2019).") ]],
+
+    // ── Texture inputs ────────────────────────────────────────────────────────
+    uniform texture_2d albedo_texture = texture_2d("../data/regolith_albedo.png",
+                                                    ::tex::gamma_srgb)
+    [[  anno::display_name("Albedo Texture (sRGB)"),
+        anno::description(
+            "Ferric dust colour map from generate_terrain_textures.py. "
+            "Encodes Bell 2004 fBm spectral variation.") ]],
+
+    uniform texture_2d normal_texture = texture_2d("../data/regolith_normal.png",
+                                                    ::tex::gamma_linear)
+    [[  anno::display_name("Normal Map (Linear, OpenGL convention)"),
+        anno::description(
+            "Sullivan 2005 aeolian ripple micro-normals, λ=3.5m. "
+            "Encoded as [0,1] RGB; decoded as 2*rgb−1.") ]],
+
+    uniform texture_2d roughness_texture = texture_2d("../data/regolith_roughness.png",
+                                                       ::tex::gamma_linear)
+    [[  anno::display_name("Roughness Texture (Linear, R-channel)"),
+        anno::description(
+            "Spatially-varying roughness: ripple crests (coarse) vs troughs (fine). "
+            "Base value 0.58 (Golombek 2008 THEMIS survey).") ]],
+
+    uniform float2 uv_scale = float2(1.0, 1.0)
+    [[  anno::display_name("UV Tile Scale"),
+        anno::description(
+            "Multiplied onto the 'st' primvar UV coordinates. "
+            "Default 1.0 keeps the 2m/tile mapping from generate_terrain_textures.py.") ]]
+
+) = let {
+
+    // ── 1. UV coordinates ────────────────────────────────────────────────────
+    // Isaac Sim passes the "st" primvar as texture coordinate index 0.
+    float3 tc   = state::texture_coordinate(0);
+    float2 uv   = float2(tc.x, tc.y) * uv_scale;
+
+    // ── 2. Albedo from texture — with tiling repetition break ────────────────
+    // The primary UV tiles at 2m (from "st" primvar).  Over a 40m scene that
+    // gives a 20×20 grid — the period can become visible, especially in flat
+    // areas between rocks.
+    //
+    // Fix: sample the same texture at a SECOND scale (7.3m period, irrational
+    // ratio to 2m) and blend 25%.  This destroys the periodic grid without
+    // adding any new texture assets.
+    //
+    //   primary UV:   uv (from "st", period = 2.0m)
+    //   secondary UV: uv × (2.0/7.3) ≈ uv × 0.2740  (period = 7.3m)
+    //   Third UV:     uv × (2.0/3.7) ≈ uv × 0.5405  (period = 3.7m)
+    //   Blend: 0.60 × primary + 0.25 × secondary + 0.15 × tertiary
+    //
+    // The three scales cover 2m, 3.7m, and 7.3m — none are harmonics.
+    // The result looks non-repeating across the full terrain extent.
+    color tex_primary   = tex::lookup_color(
+        albedo_texture, uv, tex::wrap_repeat, tex::wrap_repeat);
+    color tex_secondary = tex::lookup_color(
+        albedo_texture, uv * 0.2740, tex::wrap_repeat, tex::wrap_repeat);
+    color tex_tertiary  = tex::lookup_color(
+        albedo_texture, uv * 0.5405, tex::wrap_repeat, tex::wrap_repeat);
+    color tex_albedo = tex_primary * 0.60 + tex_secondary * 0.25 + tex_tertiary * 0.15;
+
+    color vert_color = state::color();   // reads "displayColor" primvar
+    // Blend: 40% vertex geological detail, 60% multi-scale texture
+    color base_albedo = (tex_albedo * 0.6 + vert_color * 0.4)
+                        * (single_scatter_albedo / 0.32);
+
+    // ── 3. Roughness from texture ────────────────────────────────────────────
+    // roughness_texture encodes spatially-varying roughness ∈ [0.4, 0.8].
+    // Macroscopic roughness θ̄=20° → effective Beckmann α ≈ tan(20°) ≈ 0.364.
+    // We normalise to [0,1]: α_norm = tan(θ̄)/tan(45°) = tan(θ̄).
+    float4 rough_rgba    = tex::lookup_float4(
+        roughness_texture, uv, tex::wrap_repeat, tex::wrap_repeat);
+    float  rough_spatial = rough_rgba.x;   // R channel
+    float  macro_alpha   = math::tan(macro_roughness_deg * math::PI / 180.0);
+    float  surface_roughness = math::clamp(macro_alpha * rough_spatial, 0.01, 1.0);
+
+    // ── 4. Normal map via tangent-space helper ────────────────────────────────
+    // base::tangent_space_normal_texture handles the full TBN transformation and
+    // returns the perturbed shading normal in internal space.
+    float3 shading_normal = base::tangent_space_normal_texture(
+        texture:        normal_texture,
+        factor:         1.0,
+        flip_tangent_u: false,
+        flip_tangent_v: false,
+        uvw: base::texture_coordinate_info(
+            position:  float3(uv.x, uv.y, 0.0),
+            tangent_u: state::texture_tangent_u(0),
+            tangent_v: state::texture_tangent_v(0)
+        )
+    );
+
+    // ── 5. Hapke-derived BSDF weights ────────────────────────────────────────
+    //
+    // At average viewing geometry (g≈40°, i≈30°, e≈20°) for MastCam at noon:
+    //
+    //   μ₀ = cos(incidence from zenith)
+    float w0    = single_scatter_albedo;
+    float mu0   = math::cos((90.0 - sun_elevation_deg) * math::PI / 180.0);
+    float h_opp = opposition_width;
+    float B0    = opposition_amplitude;
+
+    // H-function at μ=0.5 (representative emission angle ~60°)
+    float H_mu0 = hapke_H(mu0, w0);
+    float H_mu  = hapke_H(0.5, w0);         // emission-angle average
+    float h_sq_minus_1 = H_mu0 * H_mu - 1.0;   // multiple-scatter enhancement
+
+    // Lommel–Seeliger factor at emission = 0 (camera looking straight at surface):
+    // L-S = μ₀ / (μ₀ + 1)  →  ranges 0.29–0.50 for sun at 30°–90°
+    float ls_at_nadir = mu0 / (mu0 + 1.0);
+
+    // Energy-conserving weights (each maps to a MDL BSDF component):
+    //   w_opp  : opposition surge contribution (single scatter × B(g))
+    //   w_sing : background single scatter (no surge) — HG forward lobe
+    //   w_mult : multiple scatter — nearly Lambertian
+    float opposition_area = B0 * h_opp * 12.0;   // ≈ integrated B(g) area for g∈[0,π]
+    float w_opp  = w0 * opposition_area / (1.0 + opposition_area);
+    float w_sing = w0 * (1.0 - w0) * 0.60;
+    float w_mult = (h_sq_minus_1 > 0.0) ? (w0 * w0 * h_sq_minus_1 * 0.35) : 0.0;
+
+    // Normalise so components sum to ≤ w₀ (energy conservation)
+    float w_total = w_opp + w_sing + w_mult + 1e-6;
+    float w_norm  = w0 / w_total;
+    float wA = math::clamp(w_opp  * w_norm, 0.0, 1.0);
+    float wB = math::clamp(w_sing * w_norm, 0.0, 1.0 - wA);
+    float wC = math::clamp(w_mult * w_norm, 0.0, 1.0 - wA - wB);
+
+    // MDL roughness for opposition lobe:
+    //   h=0.06 rad → retro roughness ≈ h / 0.30 = 0.20  (linear empirical mapping)
+    float opp_mdl_rough = math::clamp(h_opp / 0.30, 0.01, 0.50);
+
+    // MDL roughness for HG single-scatter lobe:
+    //   Beckmann α ≈ (1−g)·√2 / (1+g)  (Heitz 2014 mapping)
+    //   g=0.68 → α ≈ 0.32·1.414/1.68 ≈ 0.269
+    //   Clamp to [0.05, 0.95] — MDL roughness range
+    // math::SQRT2 = √2 ≈ 1.41421356 (written as literal for MDL 1.4 compat)
+    float hg_mdl_rough = math::clamp(
+        (1.0 - hg_asymmetry) * 1.41421356 / (1.0 + hg_asymmetry),
+        0.05, 0.95
+    );
+
+    // ── 6. Build BSDF ────────────────────────────────────────────────────────
+    //
+    // (A) Opposition surge — retroreflective peak centred at g≈0
+    bsdf bsdf_A = df::backscattering_glossy_reflection_bsdf(
+        roughness: opp_mdl_rough,
+        tint:      base_albedo * (1.0 + B0 * 0.5)
+    );
+
+    // (B) HG single-scatter — forward-peaked lobe (approximated by glossy)
+    bsdf bsdf_B = df::simple_glossy_bsdf(
+        roughness:   hg_mdl_rough,
+        tint:        base_albedo,
+        mode:        df::scatter_mode::scatter_reflect
+    );
+
+    // (C) Multiple scatter — Lambertian with H-function tint
+    bsdf bsdf_C = df::diffuse_reflection_bsdf(
+        tint:      base_albedo * math::max(H_mu0 * H_mu, 1.0),
+        roughness: surface_roughness
+    );
+
+    // Mix A + B + C with Hapke-derived weights
+    bsdf hapke_base = df::normalized_mix(
+        components: df::bsdf_component[](
+            df::bsdf_component(weight: wA, component: bsdf_A),
+            df::bsdf_component(weight: wB, component: bsdf_B),
+            df::bsdf_component(weight: wC, component: bsdf_C)
+        )
+    );
+
+    // ── 7. Lommel–Seeliger limb effect ───────────────────────────────────────
+    // df::directional_factor applies: tint(θ) = lerp(normal_t, grazing_t, (1−cosθ)^exp)
+    // At θ=0 (nadir):   tint = normal_tint  = ls_at_nadir  ≈ 0.42 for sun at 45°
+    // At θ=90 (grazing): tint = grazing_tint = 1.0
+    // This approximates L-S(μ) = μ₀/(μ₀+μ) evaluated at emission angle θ.
+    bsdf hapke_final = df::directional_factor(
+        normal_tint:  color(ls_at_nadir),
+        grazing_tint: color(1.0),
+        exponent:     1.0,
+        base:         hapke_base
+    );
+
+} in material(
+    surface: material_surface(
+        scattering: hapke_final
+    ),
+    geometry: material_geometry(
+        normal: shading_normal
+    )
+);

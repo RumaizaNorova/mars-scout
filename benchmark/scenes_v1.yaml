@@ -1,0 +1,9 @@
+version: 1
+scenes:
+  - id: mars_flat_v1
+    description: "Single Mars-like terrain with 3–6 distinct rocks in fixed poses (MVP)."
+    isaac_stage: "TBD"
+    notes:
+      - "Pin Isaac Sim version and stage path once chosen."
+      - "Keep lighting fixed for benchmark repeatability."
+

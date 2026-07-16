@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mars_scout_geometry</name>
+  <version>0.1.0</version>
+  <description>
+    Camera back-projection, RANSAC ground-plane estimation, and
+    2-D → 3-D waypoint projection for Mars Scout.
+  </description>
+  <maintainer email="norova@ualberta.ca">Ruma</maintainer>
+  <license>MIT</license>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>mars_scout_msgs</depend>
+  <export><build_type>ament_python</build_type></export>
+  <test_depend>pytest</test_depend>
+</package>
