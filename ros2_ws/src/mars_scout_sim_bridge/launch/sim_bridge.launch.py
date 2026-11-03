@@ -12,7 +12,7 @@ Usage (GPU instance, Isaac Sim already running):
 
 This launch file starts:
   1. sim_bridge_node      — Isaac Sim <-> Mars Scout topic translation
-  2. perception_node      — VLM (Moondream2 on GPU)
+  2. perception_node      — VLM (backend:=gemini by default, or mock / moondream2)
   3. projection_node      — 2D bbox -> 3D waypoint
   4. agent_node           — FSM + controller + NavigateToTarget action server
 """
@@ -27,6 +27,7 @@ def generate_launch_description():
     # ── launch args ───────────────────────────────────────────────────────────
     args = [
         DeclareLaunchArgument("query",               default_value="rock formation"),
+        DeclareLaunchArgument("backend",             default_value="gemini"),
         DeclareLaunchArgument("isaac_rgb_topic",     default_value="/isaac_camera/rgb"),
         DeclareLaunchArgument("isaac_depth_topic",   default_value="/isaac_camera/depth"),
         DeclareLaunchArgument("isaac_info_topic",    default_value="/isaac_camera/camera_info"),
@@ -60,7 +61,8 @@ def generate_launch_description():
         name       = "perception_node",
         output     = "screen",
         parameters = [{
-            "backend":         "mock",    # switch to moondream2 once installed
+            "backend":         LaunchConfiguration("backend"),
+            "inference_rate_hz": 1.0,
             "default_query":   LaunchConfiguration("query"),
             "use_sim_time":    False,
         }],

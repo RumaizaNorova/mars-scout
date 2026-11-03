@@ -2,67 +2,61 @@ name: CI
 
 on:
   push:
-    branches: ["main", "dev", "feature/**"]
+    branches: ["main", "dev", "feature/**", "phase*/**"]
   pull_request:
     branches: ["main"]
 
 jobs:
   test:
-    name: "Tests — Python ${{ matrix.python-version }}"
-    runs-on: ubuntu-22.04
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11"]
-
+    name: "Tests"
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
           cache: pip
+          cache-dependency-path: requirements/test.txt
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy opencv-python pytest pytest-cov
+      - name: Install locked dependencies
+        run: pip install -r requirements/test.txt
 
       - name: Run tests
-        run: |
-          python -m pytest \
-            ros2_ws/src/mars_scout_geometry/test/ \
-            ros2_ws/src/mars_scout_mock/test/ \
-            ros2_ws/src/mars_scout_perception/test/ \
-            ros2_ws/src/mars_scout_control/test/ \
-            -v --tb=short \
-            --cov=ros2_ws/src \
-            --cov-report=term-missing \
-            --cov-report=xml:coverage.xml
+        run: bash scripts/run_tests.sh
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        if: matrix.python-version == '3.11'
-        with:
-          files: coverage.xml
-          fail_ci_if_error: false
+  ros-image:
+    name: "ROS image builds and its tests pass"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check compose file
+        run: docker compose --profile sim --profile smoke --profile cpu --profile telemetry config --quiet
+      - name: Build and test
+        run: docker compose --profile cpu run --build --rm test
+      - name: Launch files load
+        run: >
+          docker compose --profile cpu run --rm test
+          bash -c "ros2 launch --show-args mars_scout_bringup full.launch.py &&
+                   ros2 launch --show-args mars_scout_bringup mock.launch.py"
 
   lint:
     name: "Lint"
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
-      - name: Install ruff
-        run: pip install ruff
+          cache-dependency-path: requirements/test.txt
+      - name: Install locked dependencies
+        run: pip install -r requirements/test.txt
       - name: Lint
-        run: |
-          ruff check ros2_ws/src/ \
-            --ignore E501,E402,F401 \
-            --exclude "*/test/*,*/__init__.py"
+        run: >
+          ruff check ros2_ws/src/ isaac_sim/setup_scene.py isaac_sim/scene_checks.py
+          isaac_sim/rover_controller.py scripts/smoke_ros.py scripts/list_gemini_models.py
+          --select E,F --ignore E402,E501,F401
+          --exclude "*/test/*,*/__init__.py"

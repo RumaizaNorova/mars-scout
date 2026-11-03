@@ -1,0 +1,4 @@
+# pip packages for the ROS container. numpy, scipy, OpenCV and PyYAML come from
+# apt so they stay binary-compatible with cv_bridge.
+google-genai
+pillow

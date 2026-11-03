@@ -14,6 +14,7 @@ Topics published:
 """
 
 from __future__ import annotations
+import os
 import math
 import rclpy
 from rclpy.node import Node
@@ -116,7 +117,7 @@ class AgentNode(Node):
                 fleet = FleetMonitor()
                 self._planner = MissionPlanner(
                     mem, qual, fleet,
-                    vlm_backend_name="gemini/gemini-1.5-flash",
+                    vlm_backend_name=f"gemini/{os.environ.get('GEMINI_MODEL', 'unset')}",
                 )
                 self.get_logger().info("Ground control telemetry: MongoDB + Arize + Elastic active.")
             except Exception as exc:
@@ -238,7 +239,7 @@ class AgentNode(Node):
                     "inference_ms":      getattr(self._latest_target, "inference_ms", 0.0)
                                          if self._latest_target else 0.0,
                     "query_text":        goal.query_text,
-                    "vlm_backend":       "gemini/gemini-1.5-flash",
+                    "vlm_backend":       f"gemini/{os.environ.get('GEMINI_MODEL', 'unset')}",
                 }
                 try:
                     self._planner.log_tick(self._mission_id, obs)

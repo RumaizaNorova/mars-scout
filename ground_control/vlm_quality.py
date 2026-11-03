@@ -9,7 +9,7 @@ OpenInference semantic conventions so Phoenix understands it as an LLM call:
   span attributes
   ├─ input.value          → query_text
   ├─ output.value         → VLM description
-  ├─ llm.model_name       → gemini/gemini-1.5-flash
+  ├─ llm.model_name       → gemini/<GEMINI_MODEL>
   ├─ llm.output_messages  → description
   ├─ metadata.fsm_state   → SEARCHING | APPROACHING | VERIFYING
   ├─ metadata.confidence  → float [0,1]
@@ -237,7 +237,7 @@ class VLMQualityMonitor:
         """
         from openinference.semconv.trace import SpanAttributes
         attrs = {
-            SpanAttributes.LLM_MODEL_NAME:    ctx.get("vlm_backend", "gemini/gemini-1.5-flash"),
+            SpanAttributes.LLM_MODEL_NAME:    ctx.get("vlm_backend", "unknown"),
             SpanAttributes.INPUT_VALUE:        ctx["query_text"],
             SpanAttributes.OUTPUT_VALUE:       obs.get("description", ""),
             "metadata.mission_id":             ctx["mission_id"],
@@ -362,8 +362,12 @@ class VLMQualityMonitor:
                 "GOOGLE_API_KEY required for Phoenix LLM evals."
             )
 
+        model_id = os.environ.get("GEMINI_MODEL", "").strip()
+        if not model_id:
+            raise RuntimeError("GEMINI_MODEL required for Phoenix LLM evals.")
+
         eval_model = GeminiModel(
-            model="gemini-1.5-flash",
+            model=model_id,
             api_key=api_key,
         )
 

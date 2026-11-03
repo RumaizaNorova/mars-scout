@@ -89,15 +89,15 @@ def main(args=None):
         for param, topic in bridge_hints.items():
             print(f"    --ros-args -p {_GREEN}{param}:={topic}{_RESET}")
         print()
-        print(f"  Full launch command:")
+        print("  Full launch command:")
         args_str = " ".join(f"-p {k}:={v}" for k, v in bridge_hints.items())
         print(f"  {_BOLD}ros2 run mars_scout_sim_bridge sim_bridge_node "
               f"--ros-args {args_str}{_RESET}")
     else:
         print(f"\n  {_YELLOW}No Isaac Sim topics detected. "
               f"Is Isaac Sim running with ros2_bridge enabled?{_RESET}")
-        print(f"  Ensure your scene script includes:")
-        print(f"    from omni.isaac.ros2_bridge import ROS2Camera, ROS2Odometry")
+        print("  Ensure your scene script includes:")
+        print("    from omni.isaac.ros2_bridge import ROS2Camera, ROS2Odometry")
 
     print(f"{'═'*72}\n")
 

@@ -241,7 +241,6 @@ class DStarLitePlanner:
             return None
 
         # Find first waypoint beyond lookahead distance
-        lookahead_cells = lookahead_m / GRID_RES
         rx, ry = self._grid_to_world(sr, sc)
         for (wx, wy) in self._path:
             if math.hypot(wx - rx, wy - ry) >= lookahead_m:

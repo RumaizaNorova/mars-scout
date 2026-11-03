@@ -9,5 +9,6 @@
   <depend>mars_scout_perception</depend>
   <depend>mars_scout_geometry</depend>
   <depend>mars_scout_control</depend>
+  <depend>mars_scout_sim_bridge</depend>
   <export><build_type>ament_python</build_type></export>
 </package>

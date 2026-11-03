@@ -3,9 +3,10 @@ rover_controller.py
 ===================
 6-wheel differential drive controller for the ARES rover.
 
-Subscribes to /rover/cmd_vel (geometry_msgs/Twist) and converts
-linear/angular velocity commands into individual wheel joint velocities
-using the standard differential drive formula — applied to all 6 wheels
+Takes /rover/cmd_vel commands from a read_command callable (setup_scene.py
+reads them from Isaac's ROS bridge) and converts linear/angular velocity
+into individual wheel joint velocities using the standard differential
+drive formula — applied to all 6 wheels
 simultaneously (3 left, 3 right).
 
 Why Python instead of OmniGraph:
@@ -22,7 +23,7 @@ Called once per simulation step from setup_scene.py's main loop.
 
 from __future__ import annotations
 import math
-from typing import List
+from typing import Callable, List, Optional, Tuple
 
 try:
     from pxr import UsdPhysics
@@ -30,22 +31,16 @@ try:
 except ImportError:
     _PXR_AVAILABLE = False
 
-try:
-    import rclpy
-    from geometry_msgs.msg import Twist
-    _RCLPY_AVAILABLE = True
-except ImportError:
-    _RCLPY_AVAILABLE = False
-
 
 class RoverWheelController:
     """
-    Reads /rover/cmd_vel and drives all 6 wheels each simulation step.
+    Drives all 6 wheels each simulation step.
 
     Parameters
     ----------
     stage         Active Usd.Stage
     rover_result  dict returned by build_ares_rover()
+    read_command  Returns the latest (linear m/s, angular rad/s)
     """
 
     WHEEL_RADIUS  = 0.2625   # metres (matches RoverDims.WHEEL_R)
@@ -56,9 +51,12 @@ class RoverWheelController:
     SLIP_ONSET    = 0.08     # slip starts if accel > 8% per step (loose regolith threshold)
     SLIP_RECOVERY = 0.5      # slip decays at 50% per second (friction regains grip)
 
-    def __init__(self, stage, rover_result: dict):
-        self._stage      = stage
-        self._root       = rover_result["root_path"]
+    def __init__(self, stage, rover_result: dict,
+                 read_command: Callable[[], Tuple[float, float]]):
+        self._stage        = stage
+        self._root         = rover_result["root_path"]
+        self._read_command = read_command
+        self._override: Optional[Tuple[float, float]] = None
 
         # Drive joint paths (DriveAPI applied on Y axis)
         self._left_joints: List[str] = [
@@ -84,48 +82,22 @@ class RoverWheelController:
         self._slip_left  = 0.0
         self._slip_right = 0.0
 
-        # ROS2
-        self._ros_node = None
-        self._init_ros2()
-
         print(f"[rover_controller] Ready — 6 wheels on {self._root}")
-        print(f"[rover_controller] Listening on /rover/cmd_vel")
 
-    # ── ROS2 setup ────────────────────────────────────────────────────────────
-
-    def _init_ros2(self) -> None:
-        if not _RCLPY_AVAILABLE:
-            print("[rover_controller] rclpy not available — cmd_vel disabled")
-            return
-        try:
-            if not rclpy.ok():
-                rclpy.init()
-            self._ros_node = rclpy.create_node("rover_wheel_controller")
-            self._ros_node.create_subscription(
-                Twist, "/rover/cmd_vel", self._on_cmd_vel, 10
-            )
-            print("[rover_controller] ROS2 subscription /rover/cmd_vel OK")
-        except Exception as e:
-            print(f"[rover_controller] ROS2 init warning: {e} — proceeding without cmd_vel")
-            self._ros_node = None
-
-    def _on_cmd_vel(self, msg: "Twist") -> None:
-        self._cmd_linear  = float(msg.linear.x)
-        self._cmd_angular = float(msg.angular.z)
+    def set_override(self, linear: float, angular: float) -> None:
+        """Ignore read_command and hold this command (used by the smoke test)."""
+        self._override = (float(linear), float(angular))
 
     # ── Per-step update ───────────────────────────────────────────────────────
 
     def step(self, dt: float = 1.0 / 60.0) -> None:
         """
         Call once per simulation step.
-        Polls ROS2, ramps wheel velocities, writes DriveAPI targets.
+        Reads the command, ramps wheel velocities, writes DriveAPI targets.
         """
-        # Poll ROS2 (non-blocking)
-        if self._ros_node is not None:
-            try:
-                rclpy.spin_once(self._ros_node, timeout_sec=0.0)
-            except Exception:
-                pass
+        self._cmd_linear, self._cmd_angular = (
+            self._override if self._override is not None else self._read_command()
+        )
 
         # Compute target wheel velocities from differential drive
         half_track = self.TRACK_WIDTH / 2.0
@@ -179,15 +151,14 @@ class RoverWheelController:
             return
         prim = self._stage.GetPrimAtPath(joint_path)
         if not prim.IsValid():
-            return
-        drive = UsdPhysics.DriveAPI.Get(prim, "Y")
-        if drive:
-            drive.GetTargetVelocityAttr().Set(float(vel_rad_s))
+            raise RuntimeError(f"Wheel joint not found: {joint_path}")
+        UsdPhysics.DriveAPI.Get(prim, "Y").GetTargetVelocityAttr().Set(float(vel_rad_s))
 
     # ── Emergency stop ────────────────────────────────────────────────────────
 
     def stop(self) -> None:
         """Immediately stop all wheels."""
+        self._override    = (0.0, 0.0)
         self._cmd_linear  = 0.0
         self._cmd_angular = 0.0
         for jp in self._left_joints + self._right_joints:

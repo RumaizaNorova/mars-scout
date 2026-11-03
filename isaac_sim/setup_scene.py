@@ -5,14 +5,17 @@ Isaac Sim Scene Setup
 
 Builds the full simulation:
   1. 500×500m Jezero Crater terrain (real HiRISE DTM, 1m/px)
-  2. 450 geologically-placed rocks (CFA size-frequency distribution)
+  2. Rocks placed by the CFA size-frequency distribution
   3. Perseverance-class rover with rocker-bogie suspension
   4. Stereo MastCam-Z + chase camera (3rd-person view)
   5. ROS2 topics for the full pipeline
 
-Usage:
-  python3 isaac_sim/setup_scene.py            # headless
-  python3 isaac_sim/setup_scene.py --headed   # GUI via VNC (port 6080)
+Any failure stops the run: a scene that starts must be the scene we asked for.
+
+Usage (inside the Isaac Sim container, see docker-compose.yml):
+  isaac_sim/setup_scene.py                        # HiRISE terrain, runs until stopped
+  isaac_sim/setup_scene.py --terrain procedural   # no DTM file needed
+  isaac_sim/setup_scene.py --smoke-test           # run checks, write a report, exit
 
 What gets published:
   /isaac_camera/rgb       MastCam RGB  (what rover sees)
@@ -20,9 +23,6 @@ What gets published:
   /isaac_camera/chase     Chase camera (3rd-person view)
   /odom                   Rover odometry
   Subscribes: /rover/cmd_vel  → 6-wheel drive
-
-Then in a new terminal:
-  ros2 launch mars_scout_sim_bridge sim_bridge.launch.py
 """
 
 from __future__ import annotations
@@ -31,48 +31,60 @@ import os
 import sys
 
 # ── Parse args BEFORE SimulationApp (it hijacks sys.argv) ────────────────────
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 parser = argparse.ArgumentParser(add_help=False)
-parser.add_argument("--headed",   action="store_true", help="Run with GUI (requires VNC)")
-parser.add_argument("--headless", action="store_true", help="Run headless (default)")
+parser.add_argument("--headed", action="store_true", help="Run with GUI (not in the container)")
+parser.add_argument("--terrain", choices=["hirise", "procedural"], default="hirise")
+parser.add_argument("--smoke-test", action="store_true", help="Run checks, write a report, exit")
+parser.add_argument("--report", default=os.path.join(_REPO_ROOT, "outputs", "smoke_report.json"))
 _args, _remaining = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + _remaining
-_headless = not _args.headed   # default is headless
+
+# Local helpers with no Isaac dependency (same directory)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import scene_checks
+
+_HIRISE_PATH = os.path.join(_REPO_ROOT, "data", "jezero_hirise.tif")
+if _args.terrain == "hirise" and not os.path.isfile(_HIRISE_PATH):
+    sys.exit(
+        f"[setup_scene] HiRISE DTM not found at {_HIRISE_PATH}.\n"
+        "Run scripts/download_hirise.sh, or pass --terrain procedural."
+    )
 
 # ── SimulationApp (must be first Isaac Sim call) ──────────────────────────────
-try:
-    from isaacsim import SimulationApp
-except ImportError:
-    from omni.isaac.kit import SimulationApp
+from isaacsim import SimulationApp
 
 simulation_app = SimulationApp({
-    "headless": _headless,
+    "headless": not _args.headed,
     "width":  1280,
     "height":  720,
 })
 
-print(f"[setup_scene] ARES Isaac Sim starting ({'headless' if _headless else 'GUI'})")
-
 # ── Deferred imports (after SimulationApp) ────────────────────────────────────
-import numpy as np
-import omni
-import omni.usd
-import omni.graph.core as og
-import omni.replicator.core as rep
-from omni.isaac.core.utils.extensions import enable_extension
+from isaacsim.core.utils.extensions import enable_extension
 
-# Local builders (same directory)
-sys.path.insert(0, os.path.dirname(__file__))
+enable_extension("omni.replicator.core")
+enable_extension("isaacsim.ros2.bridge")
+simulation_app.update()
+print("[setup_scene] ROS2 bridge enabled")
+
+import numpy as np
+import omni.graph.core as og
+import omni.physx
+import omni.replicator.core as rep
+import omni.usd
+from isaacsim.core.api import World
+from pxr import Gf, UsdPhysics
+
 from hirise_terrain_builder import build_mars_scene
 from ares_rover_builder      import build_ares_rover
 from rover_controller        import RoverWheelController
 
-# Isaac Sim core
-try:
-    from isaacsim.core.api import World
-except ImportError:
-    from omni.isaac.core import World
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+PHYSICS_DT = 1.0 / 60.0
+
+
 def _clean_graphs(paths: list) -> None:
     """Remove stale OmniGraph prims before recreating them."""
     _s = omni.usd.get_context().get_stage()
@@ -80,41 +92,39 @@ def _clean_graphs(paths: list) -> None:
         if _s.GetPrimAtPath(p).IsValid():
             _s.RemovePrim(p)
 
-# ── Enable ROS2 bridge ────────────────────────────────────────────────────────
-enable_extension("omni.isaac.ros2_bridge")
-simulation_app.update()
-print("[setup_scene] ROS2 bridge enabled")
+
+def _set_mars_gravity(stage) -> float:
+    """Set gravity on the stage's physics scene and return the value read back."""
+    scenes = [p for p in stage.Traverse() if p.IsA(UsdPhysics.Scene)]
+    if len(scenes) != 1:
+        raise RuntimeError(
+            f"Expected one physics scene, found {[str(p.GetPath()) for p in scenes]}"
+        )
+    scene = UsdPhysics.Scene(scenes[0])
+    scene.GetGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
+    scene.GetGravityMagnitudeAttr().Set(scene_checks.MARS_GRAVITY_M_S2)
+    return float(scene.GetGravityMagnitudeAttr().Get())
+
+
+def _body_position(body_path: str) -> np.ndarray:
+    """Rover body position read from PhysX, not from possibly stale USD."""
+    pose = omni.physx.get_physx_interface().get_rigidbody_transformation(body_path)
+    if not pose["ret_val"]:
+        raise RuntimeError(f"PhysX has no rigid body at {body_path}")
+    return np.array(pose["position"], dtype=float)
+
 
 # ── World + stage ─────────────────────────────────────────────────────────────
-world = World(stage_units_in_meters=1.0)
+world = World(stage_units_in_meters=1.0, physics_dt=PHYSICS_DT, rendering_dt=PHYSICS_DT)
 stage = omni.usd.get_context().get_stage()
-
-# ── Mars gravity ──────────────────────────────────────────────────────────────
-# Use World's built-in physics context — avoids creating a second /physicsScene
-# that conflicts with Isaac Sim's own and causes TGS solver crashes.
-try:
-    from pxr import Gf as _Gf
-    _phys = world.get_physics_context()
-    _phys.set_gravity_direction(_Gf.Vec3f(0.0, 0.0, -1.0))
-    _phys.set_gravity_magnitude(3.72)
-    print("[setup_scene] Mars gravity: 3.72 m/s²")
-except Exception as _e:
-    print(f"[setup_scene] Gravity warning: {_e} (defaulting to Earth gravity)")
+# Use World's own physics scene: a second /physicsScene causes TGS solver crashes.
+world.get_physics_context()
+_gravity_configured = _set_mars_gravity(stage)
+print(f"[setup_scene] Mars gravity: {_gravity_configured} m/s²")
 
 # =============================================================================
 # 1. Terrain
 # =============================================================================
-# Resolve HiRISE DTM: prefer path relative to repo root, fall back to home-dir conventions
-_REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_HIRISE_PATH = os.path.join(_REPO_ROOT, "data", "jezero_hirise.tif")
-if not os.path.exists(_HIRISE_PATH):
-    for _candidate in [
-        os.path.expanduser("~/mars-rover-agent/data/jezero_hirise.tif"),
-        os.path.expanduser("~/Desktop/mars-rover-agent/data/jezero_hirise.tif"),
-    ]:
-        if os.path.exists(_candidate):
-            _HIRISE_PATH = _candidate
-            break
 terrain_result = build_mars_scene(
     stage,
     terrain_path       = "/World/MarsTerrain",
@@ -125,7 +135,7 @@ terrain_result = build_mars_scene(
     terrain_ny         = 512,
     terrain_amplitude  = 0.70,
     replace_existing   = True,
-    hirise_dtm_path    = _HIRISE_PATH if os.path.exists(_HIRISE_PATH) else None,
+    hirise_dtm_path    = _HIRISE_PATH if _args.terrain == "hirise" else None,
     hirise_patch_size  = 500.0,
 )
 print(f"[setup_scene] Terrain: {terrain_result['dtm_source']} | "
@@ -136,115 +146,142 @@ print(f"[setup_scene] Terrain: {terrain_result['dtm_source']} | "
 # =============================================================================
 # 2. Rover
 # =============================================================================
-# Spawn 30m above terrain minimum so rover drops cleanly onto terrain.
-# Under Mars gravity (3.72 m/s²), 30m drop ≈ 4 seconds — handled by warmup.
+_spawn_z = scene_checks.spawn_height(terrain_result["elevation"], 500.0, 500.0)
 rover_result = build_ares_rover(
     stage,
     root_path  = "/World/Rover",
-    spawn_pos  = (0.0, 0.0, 30.0),
+    spawn_pos  = (0.0, 0.0, _spawn_z),
     spawn_yaw  = 0.0,   # facing +X (toward rocks)
 )
-
-# =============================================================================
-# 3. OmniGraph: Odometry publisher
-# =============================================================================
 _rover_path = rover_result["root_path"]
-_clean_graphs(["/World/OdomGraph"])
-try:
-    og.Controller.edit(
-        {"graph_path": "/World/OdomGraph", "evaluator_name": "execution"},
-        {
-            og.Controller.Keys.CREATE_NODES: [
-                ("OnTick",   "omni.graph.action.OnTick"),
-                ("CompOdom", "isaacsim.core.nodes.IsaacComputeOdometry"),
-                ("PubOdom",  "isaacsim.ros2.bridge.ROS2PublishOdometry"),
-            ],
-            og.Controller.Keys.SET_VALUES: [
-                ("CompOdom.inputs:chassisPrim",   [_rover_path]),
-                ("PubOdom.inputs:topicName",      "/odom"),
-                ("PubOdom.inputs:odomFrameId",    "odom"),
-                ("PubOdom.inputs:chassisFrameId", "base_link"),
-            ],
-            og.Controller.Keys.CONNECT: [
-                ("OnTick.outputs:tick",             "CompOdom.inputs:execIn"),
-                ("CompOdom.outputs:execOut",        "PubOdom.inputs:execIn"),
-                ("CompOdom.outputs:position",       "PubOdom.inputs:position"),
-                ("CompOdom.outputs:orientation",    "PubOdom.inputs:orientation"),
-                ("CompOdom.outputs:linearVelocity", "PubOdom.inputs:linearVelocity"),
-                ("CompOdom.outputs:angularVelocity","PubOdom.inputs:angularVelocity"),
-            ],
-        },
-    )
-    print("[setup_scene] OmniGraph: odometry → /odom")
-except Exception as _e:
-    print(f"[setup_scene] Odometry graph warning: {_e}")
+_body_path  = f"{_rover_path}/Body"
 
 # =============================================================================
-# 4. Physics init + renderer warmup
+# 3. OmniGraph: Odometry publisher + cmd_vel subscriber
 # =============================================================================
-try:
-    world.reset()
-    print("[setup_scene] Physics initialised")
-except Exception as _e:
-    print(f"[setup_scene] Physics warning: {_e} — continuing")
+_clean_graphs(["/World/OdomGraph", "/World/CmdVelGraph"])
+og.Controller.edit(
+    {"graph_path": "/World/OdomGraph", "evaluator_name": "execution"},
+    {
+        og.Controller.Keys.CREATE_NODES: [
+            ("OnTick",   "omni.graph.action.OnTick"),
+            ("CompOdom", "isaacsim.core.nodes.IsaacComputeOdometry"),
+            ("PubOdom",  "isaacsim.ros2.bridge.ROS2PublishOdometry"),
+        ],
+        og.Controller.Keys.SET_VALUES: [
+            ("CompOdom.inputs:chassisPrim",   [_rover_path]),
+            ("PubOdom.inputs:topicName",      "/odom"),
+            ("PubOdom.inputs:odomFrameId",    "odom"),
+            ("PubOdom.inputs:chassisFrameId", "base_link"),
+        ],
+        og.Controller.Keys.CONNECT: [
+            ("OnTick.outputs:tick",             "CompOdom.inputs:execIn"),
+            ("CompOdom.outputs:execOut",        "PubOdom.inputs:execIn"),
+            ("CompOdom.outputs:position",       "PubOdom.inputs:position"),
+            ("CompOdom.outputs:orientation",    "PubOdom.inputs:orientation"),
+            ("CompOdom.outputs:linearVelocity", "PubOdom.inputs:linearVelocity"),
+            ("CompOdom.outputs:angularVelocity","PubOdom.inputs:angularVelocity"),
+        ],
+    },
+)
+print("[setup_scene] OmniGraph: odometry → /odom")
 
-print("[setup_scene] Warming up renderer (letting rover drop onto terrain)...")
-for _ in range(60):   # 60 steps ≈ 1 sim-second — rover lands and settles
+# Rover commands arrive through Isaac's ROS bridge, so Isaac's Python never
+# imports rclpy and never has to match the ROS install's Python.
+_TWIST_NODE = "/World/CmdVelGraph/SubTwist"
+og.Controller.edit(
+    {"graph_path": "/World/CmdVelGraph", "evaluator_name": "execution"},
+    {
+        og.Controller.Keys.CREATE_NODES: [
+            ("OnTick",   "omni.graph.action.OnTick"),
+            ("SubTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
+        ],
+        og.Controller.Keys.SET_VALUES: [
+            ("SubTwist.inputs:topicName", "/rover/cmd_vel"),
+        ],
+        og.Controller.Keys.CONNECT: [
+            ("OnTick.outputs:tick", "SubTwist.inputs:execIn"),
+        ],
+    },
+)
+print("[setup_scene] OmniGraph: /rover/cmd_vel → wheels")
+
+
+def _read_cmd_vel() -> tuple:
+    """Latest (linear.x, angular.z) from the ROS bridge."""
+    linear  = og.Controller.get(og.Controller.attribute(f"{_TWIST_NODE}.outputs:linearVelocity"))
+    angular = og.Controller.get(og.Controller.attribute(f"{_TWIST_NODE}.outputs:angularVelocity"))
+    return float(linear[0]), float(angular[2])
+
+
+# =============================================================================
+# 4. Physics init, gravity measurement, settle
+# =============================================================================
+world.reset()
+print("[setup_scene] Physics initialised")
+
+# The first steps are free fall, so they measure the gravity physics really uses.
+_FREE_FALL_STEPS = 12
+_z_start = _body_position(_body_path)[2]
+for _ in range(_FREE_FALL_STEPS):
+    world.step(render=False)
+_gravity_measured = scene_checks.gravity_from_drop(
+    _z_start - _body_position(_body_path)[2], _FREE_FALL_STEPS, PHYSICS_DT
+)
+print(f"[setup_scene] Measured gravity: {_gravity_measured:.2f} m/s²")
+
+_settled = False
+_calm_steps = 0
+_last_pos = _body_position(_body_path)
+for _ in range(1200):   # up to 20 sim-seconds
     world.step(render=True)
-print("[setup_scene] Renderer warm, rover settled on terrain")
+    _pos = _body_position(_body_path)
+    _speed = float(np.linalg.norm(_pos - _last_pos)) / PHYSICS_DT
+    _last_pos = _pos
+    _calm_steps = _calm_steps + 1 if _speed < scene_checks.SETTLE_SPEED_M_S else 0
+    if _calm_steps >= 30:
+        _settled = True
+        break
+if not _settled:
+    raise RuntimeError("Rover did not come to rest on the terrain within 20 sim-seconds")
+print("[setup_scene] Rover settled on terrain")
 
 # =============================================================================
-# 5. Render products (MUST be after world.reset + warmup)
+# 5. Render products (MUST be after world.reset + settle)
 # =============================================================================
 _mastcam_path = rover_result["mastcam_L"]   # /World/Rover/Mast/MastCamL
 _chase_path   = rover_result["chase_cam"]   # /World/Rover/ChaseCamera
 
-_rp_mast  = ""
-_rp_chase = ""
-
-try:
-    _rp_mast  = rep.create.render_product(_mastcam_path,  (1280, 720)).path
-    print(f"[setup_scene] Render product: MastCamL → {_rp_mast}")
-except Exception as _e:
-    print(f"[setup_scene] MastCam render product failed: {_e}")
-
-try:
-    _rp_chase = rep.create.render_product(_chase_path, (1280, 720)).path
-    print(f"[setup_scene] Render product: ChaseCamera → {_rp_chase}")
-except Exception as _e:
-    print(f"[setup_scene] Chase cam render product failed: {_e}")
+_rp_mast_obj = rep.create.render_product(_mastcam_path, (1280, 720))
+_rp_mast     = _rp_mast_obj.path
+_rp_chase    = rep.create.render_product(_chase_path, (1280, 720)).path
+print(f"[setup_scene] Render products: {_rp_mast}, {_rp_chase}")
 
 # =============================================================================
 # 6. OmniGraph: Camera publishers (post-reset)
 # =============================================================================
 def _wire_camera(graph_path: str, render_product: str,
                  topic: str, cam_type: str) -> None:
-    if not render_product:
-        return
     _clean_graphs([graph_path])
-    try:
-        og.Controller.edit(
-            {"graph_path": graph_path, "evaluator_name": "execution"},
-            {
-                og.Controller.Keys.CREATE_NODES: [
-                    ("OnTick",    "omni.graph.action.OnTick"),
-                    ("CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
-                ],
-                og.Controller.Keys.SET_VALUES: [
-                    ("CamHelper.inputs:renderProductPath",    render_product),
-                    ("CamHelper.inputs:topicName",            topic),
-                    ("CamHelper.inputs:type",                 cam_type),
-                    ("CamHelper.inputs:frameId",              "camera_optical_frame"),
-                    ("CamHelper.inputs:enableSemanticLabels", False),
-                ],
-                og.Controller.Keys.CONNECT: [
-                    ("OnTick.outputs:tick", "CamHelper.inputs:execIn"),
-                ],
-            },
-        )
-        print(f"[setup_scene] OmniGraph: {cam_type} → {topic}")
-    except Exception as _e:
-        print(f"[setup_scene] Camera graph {topic} warning: {_e}")
+    og.Controller.edit(
+        {"graph_path": graph_path, "evaluator_name": "execution"},
+        {
+            og.Controller.Keys.CREATE_NODES: [
+                ("OnTick",    "omni.graph.action.OnTick"),
+                ("CamHelper", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+            ],
+            og.Controller.Keys.SET_VALUES: [
+                ("CamHelper.inputs:renderProductPath", render_product),
+                ("CamHelper.inputs:topicName",         topic),
+                ("CamHelper.inputs:type",              cam_type),
+                ("CamHelper.inputs:frameId",           "camera_optical_frame"),
+            ],
+            og.Controller.Keys.CONNECT: [
+                ("OnTick.outputs:tick", "CamHelper.inputs:execIn"),
+            ],
+        },
+    )
+    print(f"[setup_scene] OmniGraph: {cam_type} → {topic}")
 
 # MastCam — what rover sees
 _wire_camera("/World/CamRgbGraph",   _rp_mast,  "/isaac_camera/rgb",   "rgb")
@@ -256,31 +293,60 @@ _wire_camera("/World/CamChaseGraph", _rp_chase, "/isaac_camera/chase", "rgb")
 # =============================================================================
 # 7. Rover wheel controller
 # =============================================================================
-controller = RoverWheelController(stage, rover_result)
+controller = RoverWheelController(stage, rover_result, read_command=_read_cmd_vel)
 
 # =============================================================================
-# 8. Main loop
+# 8. Smoke test or main loop
 # =============================================================================
+def _run_smoke_test() -> list:
+    """Check the assembled scene, write the report, return any failures."""
+    annotator = rep.AnnotatorRegistry.get_annotator("rgb")
+    annotator.attach([_rp_mast_obj])
+    for _ in range(30):     # let the renderer deliver frames
+        world.step(render=True)
+    camera = scene_checks.image_stats(np.asarray(annotator.get_data()))
+
+    start = _body_position(_body_path)
+    controller.set_override(scene_checks.SMOKE_DRIVE_SPEED_M_S, 0.0)
+    for _ in range(int(scene_checks.SMOKE_DRIVE_SECONDS / PHYSICS_DT)):
+        world.step(render=True)
+        controller.step(dt=PHYSICS_DT)
+    controller.stop()
+    travel = float(np.linalg.norm((_body_position(_body_path) - start)[:2]))
+
+    report = {
+        "dtm_source":              terrain_result["dtm_source"],
+        "gravity_configured_m_s2": _gravity_configured,
+        "gravity_measured_m_s2":   _gravity_measured,
+        "settled":                 _settled,
+        "camera":                  camera,
+        "drive_travel_m":          travel,
+    }
+    failures = scene_checks.evaluate_smoke(report)
+    report["failures"] = failures
+    report["passed"]   = not failures
+    scene_checks.write_report(report, _args.report)
+    print(f"[setup_scene] Smoke report: {report}")
+    return failures
+
+
+if _args.smoke_test:
+    _failures = _run_smoke_test()
+    simulation_app.close()
+    # A crash before this point leaves no report, which also counts as a failure.
+    sys.exit(1 if _failures else 0)
+
 print("\n" + "="*60)
 print("[setup_scene] ARES simulation running.")
-print(f"[setup_scene] Terrain: {terrain_result['dtm_source'].upper()} "
-      f"({'real Jezero Crater' if terrain_result['dtm_source'] == 'hirise' else 'procedural'})")
-print(f"[setup_scene] Rover: ARES Perseverance-class at /World/Rover")
-print(f"[setup_scene] Cameras: MastCam → /isaac_camera/rgb | "
-      f"Chase → /isaac_camera/chase")
-if not _headless:
-    print(f"[setup_scene] GUI: open browser → http://localhost:6080/vnc.html")
-print("[setup_scene] ROS2 stack:")
-print("  ros2 launch mars_scout_sim_bridge sim_bridge.launch.py")
+print(f"[setup_scene] Terrain: {terrain_result['dtm_source'].upper()}")
+print(f"[setup_scene] Rover: ARES Perseverance-class at {_rover_path}")
+print("[setup_scene] Cameras: MastCam → /isaac_camera/rgb | "
+      "Chase → /isaac_camera/chase")
 print("="*60 + "\n")
 
 while simulation_app.is_running():
     world.step(render=True)
-    controller.step(dt=1.0 / 60.0)
-    try:
-        rep.orchestrator.step(pause_timeline=False)
-    except Exception:
-        pass
+    controller.step(dt=PHYSICS_DT)
 
 controller.stop()
 simulation_app.close()

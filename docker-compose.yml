@@ -1,124 +1,107 @@
-version: "3.9"
+# ARES containers. See scripts/gpu_host_setup.md.
+#
+#   bash scripts/smoke_test.sh                     Prove a GPU host works
+#   docker compose --profile sim up                Isaac Sim + full ROS stack (NVIDIA GPU)
+#   docker compose run --rm mock                   Mock pipeline (no GPU)
+#   docker compose run --rm test                   Unit tests (no GPU)
+#   docker compose --profile telemetry up -d       Local telemetry
 
-# ── Mars Scout — Docker Compose ───────────────────────────────────────────────
-#
-# Services
-# --------
-# mock     Mac / CPU dev — full mock pipeline, no GPU needed
-#          docker compose up mock
-#
-# gpu      Vast.ai / Lambda GPU host — full Isaac Sim + Gemini Vision stack
-#          GOOGLE_API_KEY=<key> docker compose up gpu
-#
-# test     Run the full test suite and exit
-#          docker compose run --rm test
-#
-# Required env vars (on the host before running)
-# -----------------------------------------------
-#   GOOGLE_API_KEY   — Google AI Studio key for Gemini Vision backend
-#                      The perception node raises at startup if this is unset.
+x-ros-build: &ros-build
+  context: .
+  dockerfile: docker/ros.Dockerfile
+  args:
+    WITH_TELEMETRY: ${WITH_TELEMETRY:-0}
+
+x-isaac: &isaac
+  build:
+    context: .
+    dockerfile: docker/isaac.Dockerfile
+    args:
+      ACCEPT_EULA: ${ACCEPT_EULA:-}
+  image: ares-isaac:5.1.0
+  network_mode: host
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  environment:
+    - ACCEPT_EULA=${ACCEPT_EULA:-}
+    - PRIVACY_CONSENT=${PRIVACY_CONSENT:-N}
+    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+  volumes:
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/cache/main:/isaac-sim/.cache:rw
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/cache/computecache:/isaac-sim/.nv/ComputeCache:rw
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/logs:/isaac-sim/.nvidia-omniverse/logs:rw
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/config:/isaac-sim/.nvidia-omniverse/config:rw
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/data:/isaac-sim/.local/share/ov/data:rw
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/pkg:/isaac-sim/.local/share/ov/pkg:rw
+    - ${ISAAC_HOME:-~/docker/isaac-sim}/outputs:/opt/ares/outputs:rw
+    - ./data:/opt/ares/data:ro
 
 services:
 
-  # ── Mock pipeline (Mac-friendly, no GPU) ─────────────────────────────────
-  mock:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    image: mars-scout:dev
-    network_mode: host
-    stdin_open: true
-    tty: true
-    volumes:
-      # Mount source so code changes are reflected without rebuild
-      - ./ros2_ws/src:/root/mars-scout/ros2_ws/src
-      # Persist Mars imagery download between runs
-      - mars_images:/root/mars-scout/ros2_ws/src/mars_scout_mock/data
-    environment:
-      - ROS_DOMAIN_ID=42
-      # Optional: set GOOGLE_API_KEY if you want to test gemini backend locally
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-    command: >
-      bash -c "
-        source /opt/ros/jazzy/setup.bash &&
-        source /root/mars-scout/ros2_ws/install/setup.bash &&
-        ros2 launch mars_scout_bringup mock.launch.py
-      "
+  # ── Isaac Sim (NVIDIA GPU) ───────────────────────────────────────────────
+  isaac:
+    <<: *isaac
+    profiles: [sim]
+    command: ["isaac_sim/setup_scene.py"]
 
-  # ── Full GPU stack (Vast.ai / Lambda) ────────────────────────────────────
-  gpu:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: mars-scout:gpu
+  # ── ROS stack ────────────────────────────────────────────────────────────
+  ros:
+    build: *ros-build
+    image: ares-ros:jazzy
+    profiles: [sim]
     network_mode: host
-    stdin_open: true
-    tty: true
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    volumes:
-      - ./ros2_ws/src:/root/mars-scout/ros2_ws/src
-      - mars_images:/root/mars-scout/ros2_ws/src/mars_scout_mock/data
-      - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
-      - DISPLAY=${DISPLAY:-:1}
-      - ROS_DOMAIN_ID=42
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
-      # MongoDB Atlas
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
       - MONGODB_URI=${MONGODB_URI:-}
-      # Elasticsearch
       - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-}
       - ELASTICSEARCH_API_KEY=${ELASTICSEARCH_API_KEY:-}
-      # Elastic APM (optional)
       - ELASTIC_APM_SERVER_URL=${ELASTIC_APM_SERVER_URL:-}
       - ELASTIC_APM_SECRET_TOKEN=${ELASTIC_APM_SECRET_TOKEN:-}
-      # Arize Phoenix (use ARIZE_API_KEY+ARIZE_SPACE_ID for cloud, or PHOENIX_COLLECTOR_ENDPOINT for local)
       - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://localhost:6006/v1/traces}
       - ARIZE_API_KEY=${ARIZE_API_KEY:-}
       - ARIZE_SPACE_ID=${ARIZE_SPACE_ID:-}
-      # Make ground_control importable
-      - PYTHONPATH=/root/mars-scout
-    command: >
-      bash -c "
-        source /opt/ros/jazzy/setup.bash &&
-        source /root/mars-scout/ros2_ws/install/setup.bash &&
-        bash scripts/run_demo.sh 'rock formation'
-      "
+    command: ["ros2", "launch", "mars_scout_bringup", "full.launch.py"]
 
-  # ── Test runner ───────────────────────────────────────────────────────────
+  ros-smoke:
+    build: *ros-build
+    image: ares-ros:jazzy
+    profiles: [smoke]
+    network_mode: host
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    command: ["python3", "scripts/smoke_ros.py"]
+
+  # ── No GPU needed ────────────────────────────────────────────────────────
+  mock:
+    build: *ros-build
+    image: ares-ros:jazzy
+    profiles: [cpu]
+    network_mode: host
+    stdin_open: true
+    tty: true
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+    volumes:
+      - mars_images:/opt/ares/ros2_ws/src/mars_scout_mock/data
+    command: ["ros2", "launch", "mars_scout_bringup", "mock.launch.py"]
+
   test:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    image: mars-scout:dev
-    command: >
-      bash -c "
-        pip install pytest pytest-cov -q &&
-        python3 -m pytest
-          ros2_ws/src/mars_scout_geometry/test/
-          ros2_ws/src/mars_scout_mock/test/
-          ros2_ws/src/mars_scout_perception/test/
-          ros2_ws/src/mars_scout_control/test/
-          -v --tb=short
-      "
+    build: *ros-build
+    image: ares-ros:jazzy
+    profiles: [cpu]
+    command: ["bash", "scripts/run_tests.sh"]
 
-  # ── Local telemetry stack (no cloud accounts needed for dev) ─────────────
-  #
-  # Start with:  docker compose up elasticsearch kibana phoenix -d
-  # Then run:    python scripts/batch_mission_runner.py
-  #
-  # Kibana UI:   http://localhost:5601
-  # Phoenix UI:  http://localhost:6006
-
+  # ── Local telemetry (no cloud accounts needed) ───────────────────────────
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    profiles: [telemetry]
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -136,6 +119,7 @@ services:
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.13.4
+    profiles: [telemetry]
     ports:
       - "5601:5601"
     environment:
@@ -146,7 +130,8 @@ services:
         condition: service_healthy
 
   phoenix:
-    image: arizephoenix/phoenix:latest
+    image: arizephoenix/phoenix@sha256:1f9a144a5357b4973e93a15718f050247cb7a4ee7b7c6c06ecb91b5eed3fbaad
+    profiles: [telemetry]
     ports:
       - "6006:6006"
       - "4317:4317"   # OTLP gRPC

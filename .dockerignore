@@ -5,6 +5,8 @@ __pycache__
 *.egg-info
 .pytest_cache
 .DS_Store
+.env
+.env.*
 
 # ROS build artefacts
 ros2_ws/build/
@@ -17,10 +19,9 @@ outputs/
 *.bag
 *.db3
 
-# Large data files (downloaded at runtime)
+# Large files: the DTM is mounted at runtime, the video is not needed in images
+*.mp4
+data/jezero_hirise.tif
 ros2_ws/src/mars_scout_mock/data/*.jpg
 ros2_ws/src/mars_scout_mock/data/*.png
-
-# Docs
-docs/PROJECT_MASTER_PLAN.md
-docs/internal/
+paper/

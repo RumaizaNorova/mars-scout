@@ -100,48 +100,42 @@ Perseverance-class, built programmatically in USD/PhysX:
 
 ---
 
-## Quick start (GPU instance with Isaac Sim)
+## Quick start (GPU host with Isaac Sim)
+
+You need a VM or bare-metal Linux host with an NVIDIA RTX GPU, Docker and the NVIDIA Container Toolkit. See [scripts/gpu_host_setup.md](scripts/gpu_host_setup.md).
 
 ```bash
 git clone https://github.com/RumaizaNorova/mars-scout
 cd mars-scout
 
-# Install system deps, ROS2 Humble, Python packages, build workspace
-bash scripts/setup_instance.sh
-
-# Download real Jezero Crater terrain (1.76 GB HiRISE, ~50 MB CTX fallback)
+cp .env.example .env       # read the Isaac licence, then fill it in
 bash scripts/download_hirise.sh
-
-# Configure env vars (copy and fill in your values)
-cp .env.local .env
-source .env
-
-# Run
+bash scripts/smoke_test.sh
 bash scripts/run_demo.sh "dark olivine boulder"
 ```
 
 ---
 
-## Run without GPU (batch simulation)
-
-The batch runner simulates complete missions using a kinematic differential drive model and procedural images -- no Isaac Sim required.
+## Run without GPU
 
 ```bash
-pip install -r requirements.txt
-
-source .env.local   # set MONGODB_URI, ELASTICSEARCH_URL, PHOENIX_COLLECTOR_ENDPOINT
-
-python3 scripts/batch_mission_runner.py --n-missions 50
+docker compose run --rm test    # unit tests
+docker compose run --rm mock    # mock pipeline with synthetic images
 ```
 
-This produces ~6000 observations written to MongoDB, Elasticsearch, and Phoenix. Open Kibana Ground Control at `http://localhost:5601`.
+The batch runner simulates complete missions using a kinematic model and procedural images, and needs the telemetry dependencies:
+
+```bash
+WITH_TELEMETRY=1 docker compose build test
+docker compose run --rm test python3 scripts/batch_mission_runner.py --n-missions 50
+```
 
 ---
 
 ## Local telemetry stack
 
 ```bash
-docker compose up elasticsearch kibana phoenix -d
+docker compose --profile telemetry up -d
 bash scripts/import_kibana_dashboard.sh
 ```
 

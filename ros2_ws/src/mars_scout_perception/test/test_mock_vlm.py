@@ -137,30 +137,61 @@ class TestParseGeminiJson:
             _parse_gemini_json("", "rock")
 
 
+def _fake_genai_modules():
+    """sys.modules entries that stand in for the google-genai SDK."""
+    import unittest.mock as mock
+    genai = mock.MagicMock()
+    google = mock.MagicMock(genai=genai)
+    return genai, {"google": google, "google.genai": genai, "google.genai.types": genai.types}
+
+
 class TestGeminiBackendInitGuard:
-    """GeminiVisionBackend must raise immediately if the API key is missing."""
+    """GeminiVisionBackend must raise immediately if configuration is missing."""
 
     def test_raises_without_api_key(self, monkeypatch):
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
             GeminiVisionBackend()
 
-    def test_raises_on_empty_api_key(self, monkeypatch):
+    def test_raises_with_empty_api_key(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "")
         with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
             GeminiVisionBackend()
 
+    def test_raises_without_model(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "fake-key-for-testing")
+        monkeypatch.delenv("GEMINI_MODEL", raising=False)
+        with pytest.raises(RuntimeError, match="GEMINI_MODEL"):
+            GeminiVisionBackend()
 
-class TestGeminiBackendName:
-    """Backend name must include model ID for logging clarity."""
 
-    def test_name_contains_model(self, monkeypatch):
-        # Patch the entire import so no real API call happens
+class TestGeminiBackendCalls:
+    """The backend must use the configured model and the google-genai call shape."""
+
+    def _backend(self, monkeypatch, response_text):
         import unittest.mock as mock
         monkeypatch.setenv("GOOGLE_API_KEY", "fake-key-for-testing")
-        fake_genai = mock.MagicMock()
-        fake_genai.GenerativeModel.return_value = mock.MagicMock()
-        with mock.patch.dict("sys.modules", {"google.generativeai": fake_genai}):
-            b = GeminiVisionBackend()
-            assert "gemini" in b.name
-            assert "1.5-flash" in b.name
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-test-model")
+        genai, modules = _fake_genai_modules()
+        client = genai.Client.return_value
+        client.models.generate_content.return_value = mock.MagicMock(text=response_text)
+        with mock.patch.dict("sys.modules", modules):
+            return GeminiVisionBackend(), client
+
+    def test_name_contains_model(self, monkeypatch):
+        backend, _ = self._backend(monkeypatch, "{}")
+        assert backend.name == "gemini/gemini-test-model"
+
+    def test_query_sends_model_and_parses_result(self, monkeypatch):
+        backend, client = self._backend(monkeypatch, (
+            '{"found": true, "description": "a rock", "confidence": 0.8,'
+            ' "bbox": {"cx": 0.5, "cy": 0.5, "w": 0.1, "h": 0.1}}'
+        ))
+        result = backend.query(np.zeros((8, 8, 3), dtype=np.uint8), "rock")
+        assert client.models.generate_content.call_args.kwargs["model"] == "gemini-test-model"
+        assert result.target_found and result.confidence == 0.8 and result.bbox.w == 0.1
+
+    def test_missing_confidence_raises(self, monkeypatch):
+        backend, _ = self._backend(monkeypatch, '{"found": true, "description": "a rock"}')
+        with pytest.raises(RuntimeError, match="confidence"):
+            backend.query(np.zeros((8, 8, 3), dtype=np.uint8), "rock")

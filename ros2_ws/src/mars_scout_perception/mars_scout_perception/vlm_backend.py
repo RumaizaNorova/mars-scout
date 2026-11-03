@@ -14,7 +14,7 @@ Backends
 --------
 - MockVLMBackend      : OpenCV-based, runs on CPU, no model download needed
 - Moondream2Backend   : real Moondream2 inference, requires CUDA GPU
-- GeminiVisionBackend : Google Gemini 1.5 Flash via API, requires GOOGLE_API_KEY
+- GeminiVisionBackend : Google Gemini via API, requires GOOGLE_API_KEY and GEMINI_MODEL
 """
 
 from __future__ import annotations
@@ -235,12 +235,15 @@ def _parse_gemini_json(raw: str, query_text: str) -> dict:
 
 class GeminiVisionBackend(VLMBackend):
     """
-    Google Gemini 1.5 Flash vision backend.
+    Google Gemini vision backend.
 
     Requirements
     ------------
-    - pip install google-generativeai
+    - pip install google-genai (locked in requirements/ros.txt)
     - GOOGLE_API_KEY environment variable set before node launch.
+    - GEMINI_MODEL environment variable set before node launch. Google retires
+      models often, so the ID is configuration, not code. List the models your
+      key can use with scripts/list_gemini_models.py.
 
     Design
     ------
@@ -259,13 +262,12 @@ class GeminiVisionBackend(VLMBackend):
 
     Error handling
     --------------
-    - Missing GOOGLE_API_KEY → RuntimeError at __init__ (no silent fallback).
+    - Missing GOOGLE_API_KEY or GEMINI_MODEL → RuntimeError at __init__ (no silent fallback).
     - Non-JSON response      → RuntimeError with raw text (no silent fallback).
     - Malformed bbox fields  → RuntimeError with context (no silent fallback).
+    - Missing confidence     → RuntimeError with context (no silent fallback).
     - API / network errors   → propagated as-is (no silent fallback).
     """
-
-    MODEL_ID = "gemini-1.5-flash"
 
     _SYSTEM_PROMPT = textwrap.dedent("""\
         You are a Mars terrain analysis system processing images from a rover camera
@@ -298,23 +300,32 @@ class GeminiVisionBackend(VLMBackend):
                 "  export GOOGLE_API_KEY=<your-key>"
             )
 
+        self._model_id = os.environ.get("GEMINI_MODEL", "").strip()
+        if not self._model_id:
+            raise RuntimeError(
+                "GEMINI_MODEL environment variable is not set or is empty. "
+                "List available models with scripts/list_gemini_models.py, then:\n"
+                "  export GEMINI_MODEL=<model-id>"
+            )
+
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
         except ImportError as exc:
             raise ImportError(
-                "google-generativeai is not installed. "
-                "Run: pip install google-generativeai"
+                "google-genai is not installed. "
+                "Run: pip install -r requirements/ros.txt"
             ) from exc
 
-        genai.configure(api_key=api_key)
-        self._model = genai.GenerativeModel(
-            self.MODEL_ID,
+        self._client = genai.Client(api_key=api_key)
+        self._config = types.GenerateContentConfig(
             system_instruction=self._SYSTEM_PROMPT,
+            response_mime_type="application/json",
         )
 
     @property
     def name(self) -> str:
-        return f"gemini/{self.MODEL_ID}"
+        return f"gemini/{self._model_id}"
 
     def query(self, image_bgr, query_text: str) -> VLMResult:
         import cv2
@@ -328,7 +339,11 @@ class GeminiVisionBackend(VLMBackend):
         )
 
         t0 = time.perf_counter()
-        response = self._model.generate_content([prompt, pil_img])
+        response = self._client.models.generate_content(
+            model=self._model_id,
+            contents=[prompt, pil_img],
+            config=self._config,
+        )
         inference_ms = (time.perf_counter() - t0) * 1000
 
         raw  = response.text.strip()
@@ -356,7 +371,11 @@ class GeminiVisionBackend(VLMBackend):
                     f"bbox={raw_bbox!r}\nfull response:\n{raw}"
                 ) from exc
 
-        confidence = float(data.get("confidence", 0.7))
+        if "confidence" not in data:
+            raise RuntimeError(
+                f"GeminiVisionBackend: response has no confidence.\nfull response:\n{raw}"
+            )
+        confidence = float(data["confidence"])
         description = data.get("description", raw)
 
         return VLMResult(

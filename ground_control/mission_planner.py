@@ -63,7 +63,7 @@ class MissionPlanner:
         terrain_memory,    # TerrainMemory instance
         vlm_quality,       # VLMQualityMonitor instance
         fleet_monitor,     # FleetMonitor instance
-        vlm_backend_name: str = "gemini/gemini-1.5-flash",
+        vlm_backend_name: str = "unknown",
     ):
         self._mem   = terrain_memory
         self._qual  = vlm_quality

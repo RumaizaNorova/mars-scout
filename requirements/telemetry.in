@@ -1,0 +1,13 @@
+# Optional: build the ROS image with WITH_TELEMETRY=1
+numpy<2
+pymongo[srv]
+elasticsearch
+elastic-apm
+arize-phoenix
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+openinference-instrumentation
+openinference-semantic-conventions
+sentence-transformers
+pandas

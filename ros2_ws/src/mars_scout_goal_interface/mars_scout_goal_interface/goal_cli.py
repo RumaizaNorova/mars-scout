@@ -73,7 +73,7 @@ class GoalCLI(Node):
         arrival_radius_m: float = 0.5,
         min_confidence:  float = 0.4,
     ):
-        print(_c(_BOLD, f"\n🚀  Sending goal: ") + _c(_CYAN, f'"{query_text}"'))
+        print(_c(_BOLD, "\n🚀  Sending goal: ") + _c(_CYAN, f'"{query_text}"'))
 
         # Also publish the query so the perception node updates immediately
         q_msg = TerrainQuery()

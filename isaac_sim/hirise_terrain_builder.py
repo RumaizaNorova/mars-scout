@@ -25,16 +25,10 @@ HiRISE data source
 ------------------
 Download the Jezero Crater DTM before first use:
 
-  # On Vast.ai server (248 MB):
-  wget -O ~/mars-rover-agent/data/jezero_hirise.tif \\
-    "https://planetarymaps.usgs.gov/mosaic/Mars_MRO_HiRISE_Jezero_Crater_DTM_1m.tif"
-
-  # Fallback smaller patch (18° N band, ~50 MB):
-  wget -O ~/mars-rover-agent/data/jezero_hirise.tif \\
-    "https://murray-lab.caltech.edu/CTX/V01/tiles/..." (see README)
+  bash scripts/download_hirise.sh      # writes data/jezero_hirise.tif (1.8 GB)
 
 Then pass:
-  build_mars_scene(stage, hirise_dtm_path="~/mars-rover-agent/data/jezero_hirise.tif")
+  build_mars_scene(stage, hirise_dtm_path="data/jezero_hirise.tif")
 
 Coordinate system: Z-up (Isaac Sim default).  Units: metres.
 """
@@ -202,10 +196,7 @@ def load_hirise_dtm(
     if not os.path.exists(tif_path):
         raise FileNotFoundError(
             f"HiRISE DTM not found: {tif_path}\n"
-            "Download with:\n"
-            "  wget -O ~/mars-rover-agent/data/jezero_hirise.tif \\\n"
-            "    https://planetarymaps.usgs.gov/mosaic/"
-            "Mars_MRO_HiRISE_Jezero_Crater_DTM_1m.tif"
+            "Download with: bash scripts/download_hirise.sh"
         )
 
     with rasterio.open(tif_path) as src:
@@ -3958,6 +3949,7 @@ def build_mars_scene(
         "slab_paths":       slab_paths,
         "skirt_paths":      skirt_paths,
         "pebble_instancer": pebble_instancer_path,
+        "elevation":        elevation,
         "dtm_source":       meta["dtm_source"],
         "elevation_min":    meta["elevation_min"],
         "elevation_max":    meta["elevation_max"],

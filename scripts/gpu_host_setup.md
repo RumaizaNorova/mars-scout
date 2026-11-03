@@ -1,165 +1,50 @@
-# GPU Day Cheatsheet — Vast.ai + Isaac Sim
+# Running ARES on a GPU host
 
-Copy-paste commands. Do them in order.
+## What to rent
 
----
+- Linux VM or bare metal. Docker has to work, and many "container" rentals block it. `scripts/check_host.sh` tells you within a minute.
+- NVIDIA RTX GPU with 16+ GB VRAM (24 GB is better), for example an RTX 3090 or 4090.
+- 32 GB RAM and 100+ GB of SSD. The Isaac image is large and the terrain is 1.8 GB.
+- Docker and the NVIDIA Container Toolkit installed, and a driver that meets NVIDIA's [requirements](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/requirements.html).
 
-## Step 1 — Rent the instance (you do this)
+Rent for an hour first. Stop the host when you finish, because billing usually continues while it's on.
 
-1. Go to [vast.ai](https://vast.ai) → **Search**
-2. Filters: **RTX 3090 or 4090**, Ubuntu 22.04, ≥ 40 GB disk, ≤ $0.55/hr
-3. Click **Rent** → you get an SSH command like:
-   ```
-   ssh -p 12345 root@xxx.xxx.xxx.xxx
-   ```
-4. Save that command. You'll use it in Step 2.
-
----
-
-## Step 2 — First SSH in, clone repo, run setup
+## Steps
 
 ```bash
-# On your Mac terminal — paste the SSH command from Vast.ai
-ssh -p 12345 root@xxx.xxx.xxx.xxx
-
-# Inside the instance:
-git clone https://github.com/RumaizaNorova/mars-scout.git /root/mars-rover-agent
-cd /root/mars-rover-agent
-bash scripts/setup_instance.sh
+git clone https://github.com/RumaizaNorova/mars-scout.git
+cd mars-scout
+cp .env.example .env        # read the Isaac licence, set ACCEPT_EULA=Y, add your keys
+bash scripts/download_hirise.sh
+bash scripts/smoke_test.sh
 ```
 
-`setup_instance.sh` installs: ROS2 Humble, Python deps, builds the colcon workspace.
-Takes ~5 minutes. You'll see ✓ lines as it goes.
+The smoke test passes only if all of these hold:
 
----
+- Gravity is set to 3.72 m/s², and the rover really falls at that rate.
+- The rover lands and comes to rest.
+- The camera frame isn't black or blank.
+- The rover drives when commanded inside Isaac Sim.
+- Camera, depth and odometry reach the ROS container, and a ROS command moves the rover.
 
-## Step 3 — Install Isaac Sim
+Then choose a Gemini model and run:
 
 ```bash
-pip install --extra-index-url https://pypi.nvidia.com \
-    isaacsim-rl \
-    isaacsim-replicator \
-    isaacsim-extscache-physics \
-    isaacsim-extscache-kit \
-    isaacsim-extscache-kit-sdk \
-    isaacsim
+docker compose --profile sim run --rm ros python3 scripts/list_gemini_models.py
+# put one model ID in .env as GEMINI_MODEL
+bash scripts/run_demo.sh "dark olivine boulder"
 ```
 
-This downloads ~15 GB. Start it, go do something else.
-Check back with: `pip show isaacsim | grep Version`
+## When something fails
 
----
-
-## Step 4 — Start VNC so you can see the Isaac Sim GUI
-
-On the **instance**:
-```bash
-Xvfb :1 -screen 0 1280x720x24 &
-export DISPLAY=:1
-x11vnc -display :1 -nopw -forever &
-websockify --web /usr/share/novnc 6080 localhost:5900 &
-```
-
-On your **Mac browser**: `http://xxx.xxx.xxx.xxx:6080/vnc.html`
-(replace with your instance's IP — shown on the Vast.ai dashboard)
-
----
-
-## Step 5 — Launch Isaac Sim with the Mars scene
-
-```bash
-# New terminal on the instance (VNC or SSH)
-cd /root/mars-rover-agent
-source /opt/ros/humble/setup.bash
-source ros2_ws/install/setup.bash
-
-# Start Isaac Sim — scene loads, rocks appear, camera starts publishing
-python3 isaac_sim/setup_scene.py
-# Add --headless if you don't need the GUI (faster):
-# python3 isaac_sim/setup_scene.py --headless
-```
-
-Wait for the line: `[setup_scene] Simulation running.`
-
----
-
-## Step 6 — Discover what Isaac Sim is publishing
-
-```bash
-# New terminal:
-source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
-ros2 run mars_scout_sim_bridge topic_inspector
-```
-
-This scans all active ROS2 topics and prints which ones the bridge needs.
-It also prints the exact `--ros-args` flags to pass if topic names differ.
-
----
-
-## Step 7 — Launch the full Mars Scout stack
-
-```bash
-# New terminal:
-source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
-ros2 launch mars_scout_sim_bridge sim_bridge.launch.py
-```
-
-If topic names don't match defaults, add the flags from Step 6:
-```bash
-ros2 launch mars_scout_sim_bridge sim_bridge.launch.py \
-    isaac_rgb_topic:=/your/actual/topic
-```
-
-You should see all four nodes start: `sim_bridge_node`, `perception_node`, `projection_node`, `agent_node`.
-
----
-
-## Step 8 — Send a navigation goal
-
-```bash
-# New terminal:
-source /opt/ros/humble/setup.bash && source ros2_ws/install/setup.bash
-ros2 run mars_scout_goal_interface goal_cli "find the large boulder"
-```
-
-Or in the interactive REPL:
-```bash
-ros2 run mars_scout_goal_interface goal_cli
-# then type: find skull-like rock
-```
-
-Watch the rover move in Isaac Sim, watch confidence climb in the terminal.
-
----
-
-## Step 9 — Run the live benchmark
-
-```bash
-python3 benchmark/run_benchmark.py --live --timeout 90 --save
-```
-
-Results saved to `benchmark/results/benchmark_live_*.json`.
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
+| Symptom | Where to look |
 |---|---|
-| `Action server not available` | `agent_node` didn't start — check Step 7 output |
-| No camera topics after Step 5 | Check VNC: Isaac Sim may have an error dialog. Re-run Step 5. |
-| `confidence always 0.0` | `perception_node` using mock backend — ensure `vlm_backend:=moondream2` |
-| Moondream2 OOM | RTX 3090 has 24 GB — should be fine. If not: `--half` flag in vlm_backend.py |
-| Isaac Sim crashes on startup | Likely driver issue: `nvidia-smi` to check, reinstall if needed |
+| `check_host` says Docker is not usable | This is a container rental. Rent a VM or bare-metal host |
+| `check_host` says containers cannot see the GPU | Install the NVIDIA Container Toolkit |
+| Scene exits with an error | The error names the failed step. Scene problems now stop the run on purpose |
+| Nothing arrives in `ros-smoke` | Check that `ROS_DOMAIN_ID` matches and both containers use host networking |
+| `GEMINI_MODEL` error | Set it from the list above. Google retires model IDs often |
 
----
+## Changing the Isaac Sim version
 
-## Quick sanity checks
-
-```bash
-nvidia-smi                          # GPU visible
-ros2 topic list                     # topics active  
-ros2 topic echo /rover/camera/image_raw --once   # camera frame arrives
-ros2 topic echo /rover/odom --once               # odometry arrives
-ros2 action list                    # /navigate_to_target listed
-```
+Update the tag and digest in `docker/isaac.Dockerfile`, then run the smoke test. Isaac 6.x uses Python 3.12, so regenerate `requirements/isaac.txt` as well.
