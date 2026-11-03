@@ -4,4 +4,5 @@ pillow
 pytest
 pytest-cov
 pyyaml
+scipy
 ruff

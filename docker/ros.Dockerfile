@@ -22,10 +22,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/ares
 COPY requirements/ requirements/
-RUN pip3 install --no-cache-dir --break-system-packages --no-deps -r requirements/ros.txt
-RUN if [ "$WITH_TELEMETRY" = "1" ]; then \
-      pip3 install --no-cache-dir --break-system-packages -r requirements/telemetry.txt; \
-    fi
+# Install beside apt's packages, not over them: pip cannot replace apt-owned files.
+RUN pip3 install --no-cache-dir --break-system-packages --no-deps --target /opt/ares/pydeps -r requirements/ros.txt
+RUN if [ "$WITH_TELEMETRY" = "1" ]; then       pip3 install --no-cache-dir --break-system-packages --no-deps --upgrade --target /opt/ares/pydeps -r requirements/telemetry.txt;     fi
+# Fail the build now if the locked packages cannot load next to apt's.
+RUN PYTHONPATH=/opt/ares/pydeps python3 -c "from google import genai; from google.genai import types; import PIL, numpy, scipy, cv2; print('deps ok', numpy.__version__)"
 
 COPY . .
 RUN bash -c "set -e; source /opt/ros/jazzy/setup.bash; cd ros2_ws; colcon build --symlink-install --event-handlers console_direct-"
@@ -33,7 +34,7 @@ RUN bash -c "set -e; source /opt/ros/jazzy/setup.bash; cd ros2_ws; colcon build 
 ENV ROS_DISTRO=jazzy
 ENV RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ENV FASTRTPS_DEFAULT_PROFILES_FILE=/opt/ares/docker/fastdds.xml
-ENV PYTHONPATH=/opt/ares
+ENV PYTHONPATH=/opt/ares:/opt/ares/pydeps
 
 ENTRYPOINT ["/opt/ares/docker/ros-entry.sh"]
 CMD ["bash"]
